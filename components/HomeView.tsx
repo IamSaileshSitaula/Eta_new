@@ -31,6 +31,20 @@ const HomeView: React.FC<HomeViewProps> = ({ onCreate, onTrack }) => {
                     <p className="text-gray-500 mt-2">Enter a tracking number to view the real-time status and location of a shipment.</p>
                 </button>
             </div>
+
+            <div className="mt-12">
+                <button 
+                    onClick={() => {
+                        if (confirm('Are you sure you want to clear all saved shipments and tracking numbers? This cannot be undone.')) {
+                            localStorage.clear();
+                            window.location.reload();
+                        }
+                    }}
+                    className="text-xs text-gray-400 hover:text-red-500 underline"
+                >
+                    Reset All Data
+                </button>
+            </div>
         </div>
     );
 };

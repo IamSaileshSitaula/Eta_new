@@ -14,6 +14,7 @@ type EditableStop = {
     coords: Coordinates | null;
     status: VerificationStatus;
     contents?: string; // Optional for long-haul, required for last-mile
+    quantity?: number; // Number of items
 }
 
 const ShipmentCreator: React.FC<ShipmentCreatorProps> = ({ onShipmentCreated, onBack }) => {
@@ -21,7 +22,7 @@ const ShipmentCreator: React.FC<ShipmentCreatorProps> = ({ onShipmentCreated, on
     const [longHaulStops, setLongHaulStops] = useState<EditableStop[]>([]);
     const [hub, setHub] = useState<EditableStop>({id: 'stop-1', name: 'Beaumont, TX', coords: null, status: 'idle'});
     const [lastMileStops, setLastMileStops] = useState<EditableStop[]>([
-        {id: `stop-2`, name: 'Port Arthur, TX', coords: null, status: 'idle', contents: '10 Mattresses'}
+        {id: `stop-2`, name: 'Port Arthur, TX', coords: null, status: 'idle', contents: 'Mattresses', quantity: 10}
     ]);
     const [isLastMileOnly, setIsLastMileOnly] = useState(false);
 
@@ -162,6 +163,7 @@ const ShipmentCreator: React.FC<ShipmentCreatorProps> = ({ onShipmentCreated, on
                 finalShipmentItems.push({
                     id: `item-${i}-${s.name.replace(/[^a-zA-Z0-9]/g, '').slice(0,4)}`,
                     contents: s.contents,
+                    quantity: s.quantity || 1,
                     destinationStopId: stopId
                 });
             }
@@ -169,8 +171,19 @@ const ShipmentCreator: React.FC<ShipmentCreatorProps> = ({ onShipmentCreated, on
 
         const hubIndex = 1 + finalLongHaulStops.length;
 
+        // Use a fallback for random ID generation if crypto.randomUUID is not available
+        const generateUUID = () => {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        };
+
         const newShipment: Shipment = {
-            trackingNumber: `SHIP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+            trackingNumber: `SHIP-${generateUUID().slice(0, 8).toUpperCase()}`,
             shipmentItems: finalShipmentItems,
             origin: finalOrigin,
             longHaulStops: finalLongHaulStops,
@@ -222,16 +235,34 @@ const ShipmentCreator: React.FC<ShipmentCreatorProps> = ({ onShipmentCreated, on
                         <div className="flex-grow space-y-2 p-3 border rounded-md bg-gray-50">
                             {renderAddressInput(stop, (v) => handleAddressChange(v, stopType, index), () => handleVerify(stopType, index), `Stop ${index + 1} Address`, placeholder)}
                              {stopType === 'lastMile' && (
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Shipment Contents for this Stop</label>
-                                    <input
-                                      type="text"
-                                      value={stop.contents}
-                                      onChange={(e) => handleContentsChange(e.target.value, index)}
-                                      placeholder="e.g., 10 Mattresses, 5 boxes"
-                                      className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
-                                      required
-                                    />
+                                <div className="space-y-2">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">Shipment Contents for this Stop</label>
+                                        <input
+                                          type="text"
+                                          value={stop.contents}
+                                          onChange={(e) => handleContentsChange(e.target.value, index)}
+                                          placeholder="e.g., Mattresses, Furniture"
+                                          className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                                          required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700">Quantity</label>
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          value={stop.quantity || 1}
+                                          onChange={(e) => {
+                                            const newStops = [...lastMileStops];
+                                            newStops[index].quantity = parseInt(e.target.value) || 1;
+                                            setLastMileStops(newStops);
+                                          }}
+                                          placeholder="e.g., 10"
+                                          className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                                          required
+                                        />
+                                    </div>
                                 </div>
                              )}
                         </div>

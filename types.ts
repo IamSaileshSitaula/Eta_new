@@ -25,12 +25,14 @@ export interface Stop {
   id: string;
   name: string;
   location: Coordinates;
-  status: 'Pending' | 'Completed' | 'In Progress';
+  status: 'Pending' | 'Completed' | 'In Progress' | 'Unloading';
+  unloadingTimeMinutes?: number; // Estimated time to unload at this stop
 }
 
 export interface ShipmentItem {
   id: string;
   contents: string;
+  quantity: number;
   destinationStopId: string;
 }
 
@@ -53,6 +55,10 @@ export interface Route {
 export interface TrafficData {
   status: 'Light' | 'Moderate' | 'Heavy';
   description: string;
+  currentSpeed?: number;      // Current speed in mph (from TomTom)
+  normalSpeed?: number;        // Normal/free-flow speed in mph
+  speedFactor?: number;        // Ratio of current/normal (0-1)
+  delaySeconds?: number;       // Delay in seconds for this segment
 }
 
 export interface WeatherData {
@@ -61,6 +67,9 @@ export interface WeatherData {
   temperature: number; // Celsius
 }
 
+// ❌ DEPRECATED: Use RerouteEvaluation from useReroutingEngine instead
+// This type is kept for backward compatibility but should not be used in new code
+// @deprecated - Will be removed in next version
 export interface RerouteSuggestion {
   reason: string;
   newRouteId: string;

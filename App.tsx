@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import HomeView from './components/HomeView';
 import LoginView from './components/LoginView';
 import TrackingView from './components/TrackingView';
@@ -8,6 +8,12 @@ import PostCreationInfo from './components/PostCreationInfo';
 import { UserRole, Shipment, Stop } from './types';
 import { INITIAL_SHIPMENT, TRACKING_NUMBERS as DEMO_TRACKING_NUMBERS } from './constants';
 import Icon from './components/Icon';
+
+// LocalStorage keys for persistence
+const STORAGE_KEYS = {
+  SHIPMENTS: 'logistics_shipments',
+  TRACKING_NUMBERS: 'logistics_tracking_numbers',
+};
 
 type View = 'home' | 'create' | 'login' | 'tracking' | 'post_creation';
 
@@ -32,17 +38,70 @@ const App: React.FC = () => {
   const [session, setSession] = useState<UserSession | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [shipments, setShipments] = useState<Record<string, Shipment>>({
-    'SHIP001': INITIAL_SHIPMENT
+  // Load from localStorage or use demo data
+  const [shipments, setShipments] = useState<Record<string, Shipment>>(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.SHIPMENTS);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        console.log('📦 Loaded shipments from localStorage:', Object.keys(parsed));
+        return parsed;
+      }
+    } catch (error) {
+      console.error('Failed to load shipments from localStorage:', error);
+    }
+    // Return demo data if nothing in localStorage
+    return { 'SHIP001': INITIAL_SHIPMENT };
   });
-  const [trackingNumberMap, setTrackingNumberMap] = useState<Record<string, TrackingInfo>>(DEMO_TRACKING_NUMBERS);
+
+  const [trackingNumberMap, setTrackingNumberMap] = useState<Record<string, TrackingInfo>>(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.TRACKING_NUMBERS);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        console.log('🔢 Loaded tracking numbers from localStorage:', Object.keys(parsed));
+        return parsed;
+      }
+    } catch (error) {
+      console.error('Failed to load tracking numbers from localStorage:', error);
+    }
+    // Return demo data if nothing in localStorage
+    return DEMO_TRACKING_NUMBERS;
+  });
+
   const [generatedTrackingNumbers, setGeneratedTrackingNumbers] = useState<GeneratedTrackingNumber[]>([]);
 
-  const handleTrack = useCallback((trackingNumber: string) => {
+  // Persist shipments to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.SHIPMENTS, JSON.stringify(shipments));
+      console.log('💾 Saved shipments to localStorage:', Object.keys(shipments));
+    } catch (error) {
+      console.error('Failed to save shipments to localStorage:', error);
+    }
+  }, [shipments]);
+
+  // Persist tracking numbers to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.TRACKING_NUMBERS, JSON.stringify(trackingNumberMap));
+      console.log('💾 Saved tracking numbers to localStorage:', Object.keys(trackingNumberMap));
+    } catch (error) {
+      console.error('Failed to save tracking numbers to localStorage:', error);
+    }
+  }, [trackingNumberMap]);
+
+  const handleTrack = useCallback((trackingNumberInput: string) => {
+    const trackingNumber = trackingNumberInput.trim().toUpperCase();
+    console.log(`🔍 Attempting to track: "${trackingNumber}"`);
+    console.log('📋 Available tracking numbers:', Object.keys(trackingNumberMap));
+
     const sessionData = trackingNumberMap[trackingNumber];
     if (sessionData) {
+      console.log('✅ Found session data:', sessionData);
       const shipmentData = shipments[sessionData.shipmentId];
       if (shipmentData) {
+        console.log('✅ Found shipment data:', shipmentData.trackingNumber);
         setSession({
           ...sessionData,
           trackingNumber,
@@ -51,9 +110,14 @@ const App: React.FC = () => {
         setView('tracking');
         setError(null);
         return;
+      } else {
+        console.error('❌ Shipment data missing for ID:', sessionData.shipmentId);
+        console.log('📦 Available shipments:', Object.keys(shipments));
       }
+    } else {
+      console.warn('❌ Tracking number not found in map');
     }
-    setError('Invalid tracking number. Please try again.');
+    setError(`Invalid tracking number "${trackingNumber}". Please try again.`);
     setSession(null);
   }, [trackingNumberMap, shipments]);
 
@@ -91,6 +155,13 @@ const App: React.FC = () => {
     setView('post_creation');
   };
 
+  const handleShipmentUpdate = (shipmentId: string, updatedShipment: Shipment) => {
+    setShipments(prev => ({
+      ...prev,
+      [shipmentId]: updatedShipment
+    }));
+  };
+
   const renderContent = () => {
     switch(view) {
       case 'home':
@@ -108,7 +179,15 @@ const App: React.FC = () => {
       case 'tracking':
         if (!session) return <LoginView onTrack={handleTrack} error="Session expired." onBack={() => setView('home')} />;
         if (session.role === UserRole.MANAGER) {
-          return <ManagerDashboard trackingNumber={session.trackingNumber} shipment={session.shipment} />;
+          return (
+            <ManagerDashboard 
+              trackingNumber={session.trackingNumber} 
+              shipment={session.shipment}
+              allShipments={shipments}
+              trackingNumberMap={trackingNumberMap}
+              onShipmentUpdate={handleShipmentUpdate}
+            />
+          );
         }
         return (
           <TrackingView
@@ -139,7 +218,7 @@ const App: React.FC = () => {
           </button>
         </header>
       )}
-      <main className={`h-full w-full ${view === 'tracking' ? 'pt-16' : ''}`}>
+      <main className={`h-full w-full ${view === 'tracking' ? 'pt-16' : ''} bg-gray-50`}>
         {renderContent()}
       </main>
     </div>

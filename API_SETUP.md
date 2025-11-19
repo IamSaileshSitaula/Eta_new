@@ -8,6 +8,7 @@ This application now uses real-time data from multiple APIs to provide accurate 
 - **Sign up**: https://openweathermap.org/api
 - **Free tier**: 1,000 API calls/day (60/minute)
 - **Cost**: $0 (Free forever)
+- **Usage in app**: Called every 1 minute = ~1,440 calls/day (exceeds free tier during extended use)
 
 **Steps to get API key:**
 1. Visit https://openweathermap.org/api
@@ -26,6 +27,7 @@ This application now uses real-time data from multiple APIs to provide accurate 
 - **Sign up**: https://developer.tomtom.com/
 - **Free tier**: 2,500 API calls/day
 - **Cost**: $0 (Free forever)
+- **Usage in app**: Called every 1 minute = ~1,440 calls/day (well within free tier)
 
 **Steps to get API key:**
 1. Visit https://developer.tomtom.com/

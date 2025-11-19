@@ -1,6 +1,5 @@
 import { Coordinates, WeatherData } from '../types';
 
-const OPENWEATHER_API_KEY = (import.meta as any).env?.VITE_OPENWEATHER_API_KEY;
 const OPENWEATHER_BASE_URL = 'https://api.openweathermap.org/data/2.5';
 
 interface OpenWeatherResponse {
@@ -33,96 +32,90 @@ interface OpenWeatherResponse {
  * @returns Weather data including condition, temperature, and description
  */
 export const fetchRealWeatherData = async (location: Coordinates): Promise<WeatherData> => {
-  if (!OPENWEATHER_API_KEY || OPENWEATHER_API_KEY === 'your_openweather_api_key_here') {
-    console.warn('OpenWeatherMap API key not configured. Using mock data.');
-    return fetchMockWeatherData();
-  }
-
-  try {
-    const [lat, lon] = location;
-    const url = `${OPENWEATHER_BASE_URL}/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=imperial`;
-    
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      throw new Error(`OpenWeatherMap API error: ${response.status}`);
-    }
-    
-    const data: OpenWeatherResponse = await response.json();
-    
-    // Determine condition based on weather code
-    let condition: WeatherData['condition'] = 'Clear';
-    const weatherId = data.weather[0]?.id || 800;
-    
-    if (weatherId >= 200 && weatherId < 300) {
-      // Thunderstorm
-      condition = 'Storm';
-    } else if (weatherId >= 300 && weatherId < 600) {
-      // Drizzle or Rain
-      condition = 'Rain';
-    } else if (weatherId >= 600 && weatherId < 700) {
-      // Snow
-      condition = 'Storm'; // Treat snow as storm for driving impact
-    } else if (weatherId >= 700 && weatherId < 800) {
-      // Atmosphere (fog, mist, etc.)
-      condition = 'Rain'; // Treat fog/mist as rain for caution
-    } else if (weatherId === 800) {
-      // Clear
-      condition = 'Clear';
-    } else if (weatherId > 800) {
-      // Clouds
-      condition = 'Clear'; // Cloudy but drivable
-    }
-    
-    // Enhanced description with driving impact
-    let description = data.weather[0]?.description || 'Unknown conditions';
-    description = description.charAt(0).toUpperCase() + description.slice(1);
-    
-    // Add driving impact information
-    if (condition === 'Storm') {
-      description += '. Severe weather - reduced visibility and road hazards.';
-    } else if (condition === 'Rain') {
-      description += '. Wet roads - drive with caution.';
-    } else {
-      description += '. Good driving conditions.';
-    }
-    
-    // Add visibility information if poor
-    if (data.visibility < 1000) {
-      description += ` Low visibility: ${Math.round(data.visibility * 3.28084)} ft.`;
-    }
-    
-    // Add wind warning for trucks
-    const windSpeedMph = data.wind.speed;
-    if (windSpeedMph > 25) {
-      description += ` High winds: ${Math.round(windSpeedMph)} mph - crosswinds may affect large vehicles.`;
-    }
-    
-    return {
-      condition,
-      temperature: Math.round(data.main.temp), // Already in Fahrenheit
-      description
-    };
-  } catch (error) {
-    console.error('Error fetching weather data:', error);
-    return fetchMockWeatherData();
-  }
-};
-
-/**
- * Fallback mock weather data when API is unavailable
- */
-const fetchMockWeatherData = (): WeatherData => {
-  const conditions: WeatherData['condition'][] = ['Clear', 'Rain', 'Storm'];
-  const condition = conditions[Math.floor(Math.random() * conditions.length)];
+  const OPENWEATHER_API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
   
-  let description = 'Clear skies. Good driving conditions.';
-  if (condition === 'Rain') description = 'Light showers, roads may be wet. Drive with caution.';
-  if (condition === 'Storm') description = 'Thunderstorm warning in effect. Severe weather - reduced visibility.';
+  console.log('🌤️ Weather API - Key status:', OPENWEATHER_API_KEY ? 'CONFIGURED' : 'MISSING');
+  
+  if (!OPENWEATHER_API_KEY || OPENWEATHER_API_KEY === 'your_openweather_api_key_here') {
+    throw new Error('OpenWeatherMap API key not configured');
+  }
+
+  const [lat, lon] = location;
+  console.log(`🌤️ Fetching real weather data for [${lat}, ${lon}]`);
+  const url = `${OPENWEATHER_BASE_URL}/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=imperial`;
+  
+  const response = await fetch(url);
+  
+  console.log('🌤️ API Response status:', response.status);
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`🌤️ API Error Response:`, errorText);
+    throw new Error(`OpenWeather API error: ${response.status}`);
+  }
+  
+  const data: OpenWeatherResponse = await response.json();
+  
+  console.log('🌤️ Raw weather data:', {
+    weatherId: data.weather[0]?.id,
+    main: data.weather[0]?.main,
+    description: data.weather[0]?.description,
+    temp: data.main.temp
+  });
+  
+  // Determine condition based on weather code
+  let condition: WeatherData['condition'] = 'Clear';
+  const weatherId = data.weather[0]?.id || 800;
+  
+  if (weatherId >= 200 && weatherId < 300) {
+    // Thunderstorm
+    condition = 'Storm';
+  } else if (weatherId >= 300 && weatherId < 600) {
+    // Drizzle or Rain
+    condition = 'Rain';
+  } else if (weatherId >= 600 && weatherId < 700) {
+    // Snow
+    condition = 'Storm'; // Treat snow as storm for driving impact
+  } else if (weatherId >= 700 && weatherId < 800) {
+    // Atmosphere (fog, mist, etc.)
+    condition = 'Rain'; // Treat fog/mist as rain for caution
+  } else if (weatherId === 800) {
+    // Clear
+    condition = 'Clear';
+  } else if (weatherId > 800) {
+    // Clouds
+    condition = 'Clear'; // Cloudy but drivable
+  }
+  
+  // Enhanced description with driving impact
+  let description = data.weather[0]?.description || 'Unknown conditions';
+  description = description.charAt(0).toUpperCase() + description.slice(1);
+  
+  // Add driving impact information
+  if (condition === 'Storm') {
+    description += '. Severe weather - reduced visibility and road hazards.';
+  } else if (condition === 'Rain') {
+    description += '. Wet roads - drive with caution.';
+  } else {
+    description += '. Good driving conditions.';
+  }
+  
+  // Add visibility information if poor
+  if (data.visibility < 1000) {
+    description += ` Low visibility: ${Math.round(data.visibility * 3.28084)} ft.`;
+  }
+  
+  // Add wind warning for trucks
+  const windSpeedMph = data.wind.speed;
+  if (windSpeedMph > 25) {
+    description += ` High winds: ${Math.round(windSpeedMph)} mph - crosswinds may affect large vehicles.`;
+  }
+  
+  console.log('✅ OpenWeatherMap data retrieved successfully:', { condition, temperature: Math.round(data.main.temp) });
   
   return {
     condition,
-    temperature: 72, // Fahrenheit
+    temperature: Math.round(data.main.temp), // Already in Fahrenheit
     description
   };
 };

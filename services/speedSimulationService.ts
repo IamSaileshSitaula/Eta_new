@@ -1,6 +1,6 @@
 import { Coordinates, TrafficData, WeatherData } from '../types';
 import { getWeatherSpeedMultiplier } from './weatherService';
-import { getTrafficSpeedMultiplier, shouldStopForTraffic, getTrafficStopDuration } from './trafficService';
+import { getTrafficSpeedMultiplier } from './trafficService';
 
 export type RoadType = 'highway' | 'arterial' | 'residential' | 'city';
 
@@ -159,13 +159,6 @@ export const calculateRealisticSpeed = (
         stopDuration = 3 + Math.random() * 5;
       }
     }
-  }
-  
-  // Check for traffic congestion stops (gridlock)
-  if (!shouldStop && shouldStopForTraffic(traffic) && timeSinceLastStop > 30) {
-    shouldStop = true;
-    stopReason = 'traffic_congestion';
-    stopDuration = getTrafficStopDuration(traffic);
   }
   
   // Rush hour increases stop frequency
