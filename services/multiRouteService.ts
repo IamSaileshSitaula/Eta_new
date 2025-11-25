@@ -7,6 +7,11 @@ import { Coordinates } from '../types';
 import { fetchOSRMRoute, EnhancedRouteData } from './osrmService';
 import { RoadSegment } from './speedSimulationService';
 
+// Constants for fuel calculation
+// In a real app, these would be fetched from an API like EIA or AAA
+const AVERAGE_DIESEL_PRICE_USD = 3.85; // National average
+const TRUCK_MPG = 6.5; // Average semi-truck MPG
+
 export interface RouteOption {
   id: string;
   path: Coordinates[];
@@ -21,6 +26,8 @@ export interface RouteOption {
     trafficRiskScore: number;
     weatherRiskScore: number;
     routeType: 'fastest' | 'shortest' | 'balanced' | 'toll-free';
+    fuelCost: number;
+    fuelConsumptionGallons: number;
   };
   liveConditions: {
     currentTrafficLevel: 'Light' | 'Moderate' | 'Heavy';
@@ -98,13 +105,26 @@ async function fetchOSRMAlternatives(
         segments.push(segment);
       }
       
+      const distanceMiles = route.distance * 0.000621371;
+      const durationSeconds = route.duration;
+      
+      // Sanity check: duration should be reasonable for distance
+      const avgSpeedMph = (distanceMiles / (durationSeconds / 3600));
+      if (avgSpeedMph > 100 || avgSpeedMph < 5) {
+        console.warn(`⚠️ OSRM route has suspicious speed: ${avgSpeedMph.toFixed(1)} mph (${distanceMiles.toFixed(1)} mi in ${(durationSeconds/60).toFixed(0)} min)`);
+      }
+      
       routes.push({
         path,
         segments,
-        totalDistance: route.distance * 0.000621371, // meters to miles
-        baseDuration: route.duration
+        totalDistance: distanceMiles,
+        baseDuration: durationSeconds
       });
     }
+    
+    console.log(`📍 OSRM returned ${routes.length} alternative routes:`,
+      routes.map((r, i) => `Route ${i+1}: ${r.totalDistance.toFixed(1)} mi in ${(r.baseDuration/60).toFixed(0)} min`)
+    );
     
     return routes;
   } catch (error) {
@@ -116,7 +136,7 @@ async function fetchOSRMAlternatives(
 /**
  * Calculate route metadata (tolls, highways, speed limits)
  */
-function calculateRouteMetadata(route: EnhancedRouteData): RouteOption['metadata'] {
+function calculateRouteMetadata(route: EnhancedRouteData, routeIndex: number): RouteOption['metadata'] {
   const { segments, totalDistance, baseDuration } = route;
   
   let tollRoadMiles = 0;
@@ -124,10 +144,13 @@ function calculateRouteMetadata(route: EnhancedRouteData): RouteOption['metadata
   let totalSpeedLimit = 0;
   
   segments.forEach(segment => {
-    // Estimate toll roads (highways in certain regions)
+    // Improved toll estimation: Varies by route alternative
+    // Primary route (index 0) typically has more tolls/highways
+    // Alternative routes (index 1+) typically avoid tolls
     if (segment.roadType === 'highway' && segment.speedLimitMph >= 65) {
-      // Rough heuristic: major interstates likely have tolls in some states
-      tollRoadMiles += segment.distance * 0.3; // 30% of highways might be toll
+      // Primary routes use major toll highways more
+      const tollProbability = routeIndex === 0 ? 0.48 : 0.06;
+      tollRoadMiles += segment.distance * tollProbability;
     }
     
     if (segment.roadType === 'highway') {
@@ -147,7 +170,13 @@ function calculateRouteMetadata(route: EnhancedRouteData): RouteOption['metadata
   
   // Classify route type
   const highwayPercentage = highwayMiles / totalDistance;
-  const routeType = classifyRouteType(highwayPercentage, totalDistance, baseDuration / 60);
+  const routeType = classifyRouteType(highwayPercentage, totalDistance, baseDuration / 60, tollRoadMiles);
+  
+  // Estimate fuel consumption (gallons)
+  const fuelConsumptionGallons = totalDistance / TRUCK_MPG;
+  
+  // Estimate fuel cost (USD)
+  const fuelCost = fuelConsumptionGallons * AVERAGE_DIESEL_PRICE_USD;
   
   return {
     totalDistanceMiles: totalDistance,
@@ -158,7 +187,9 @@ function calculateRouteMetadata(route: EnhancedRouteData): RouteOption['metadata
     avgSpeedLimit,
     trafficRiskScore,
     weatherRiskScore,
-    routeType
+    routeType,
+    fuelCost,
+    fuelConsumptionGallons: Math.round(fuelConsumptionGallons * 100) / 100
   };
 }
 
@@ -202,17 +233,26 @@ function calculateWeatherRisk(segments: RoadSegment[]): number {
 function classifyRouteType(
   highwayPercentage: number,
   totalDistance: number,
-  baseETAMinutes: number
+  baseETAMinutes: number,
+  tollRoadMiles: number
 ): 'fastest' | 'shortest' | 'balanced' | 'toll-free' {
   const avgSpeed = totalDistance / (baseETAMinutes / 60);
+  const tollPercentage = tollRoadMiles / totalDistance;
   
-  if (avgSpeed > 55 && highwayPercentage > 0.7) {
-    return 'fastest';
-  } else if (totalDistance < 100 && highwayPercentage < 0.3) {
-    return 'shortest';
-  } else if (highwayPercentage < 0.2) {
+  // Toll-free: Low toll roads (<5% of route)
+  if (tollPercentage < 0.05 && tollRoadMiles < 10) {
     return 'toll-free';
-  } else {
+  }
+  // Fastest: High speed + high highway percentage
+  else if (avgSpeed > 55 && highwayPercentage > 0.7) {
+    return 'fastest';
+  }
+  // Shortest: Minimal distance
+  else if (totalDistance < 100 && highwayPercentage < 0.4) {
+    return 'shortest';
+  }
+  // Balanced: Everything else
+  else {
     return 'balanced';
   }
 }
@@ -277,22 +317,58 @@ async function getLiveConditions(path: Coordinates[]): Promise<RouteOption['live
  * Rank routes by composite score
  */
 function rankRoutes(routes: RouteOption[]): RouteOption[] {
-  return routes.sort((a, b) => {
-    // Score based on: ETA (50%), safety (30%), distance (20%)
-    const scoreA = 
-      (1 / a.metadata.currentETAMinutes) * 50 +
-      (1 - a.metadata.trafficRiskScore) * 20 +
-      (1 - a.metadata.weatherRiskScore) * 10 +
-      (1 / a.metadata.totalDistanceMiles) * 20;
-    
-    const scoreB = 
-      (1 / b.metadata.currentETAMinutes) * 50 +
-      (1 - b.metadata.trafficRiskScore) * 20 +
-      (1 - b.metadata.weatherRiskScore) * 10 +
-      (1 / b.metadata.totalDistanceMiles) * 20;
-    
-    return scoreB - scoreA; // Higher score first
+  if (routes.length === 0) return routes;
+
+  const etaValues = routes.map(r => r.metadata.currentETAMinutes);
+  const distanceValues = routes.map(r => r.metadata.totalDistanceMiles);
+  const tollValues = routes.map(r => r.metadata.tollRoadMiles);
+  const fuelValues = routes.map(r => r.metadata.fuelCost);
+
+  const minMax = (values: number[]) => ({
+    min: Math.min(...values),
+    max: Math.max(...values)
   });
+
+  const { min: minEta, max: maxEta } = minMax(etaValues);
+  const { min: minDistance, max: maxDistance } = minMax(distanceValues);
+  const { min: minToll, max: maxToll } = minMax(tollValues);
+  const { min: minFuel, max: maxFuel } = minMax(fuelValues);
+
+  const normalizeLowerBetter = (value: number, min: number, max: number) => {
+    if (max === min) return 1;
+    return 1 - (value - min) / (max - min);
+  };
+
+  const routeScores = routes.map(route => {
+    const { metadata, liveConditions } = route;
+    const etaScore = normalizeLowerBetter(metadata.currentETAMinutes, minEta, maxEta);
+    const distanceScore = normalizeLowerBetter(metadata.totalDistanceMiles, minDistance, maxDistance);
+    const tollScore = normalizeLowerBetter(metadata.tollRoadMiles, minToll, maxToll);
+    const fuelScore = normalizeLowerBetter(metadata.fuelCost, minFuel, maxFuel);
+    const trafficScore = 1 - metadata.trafficRiskScore; // lower risk better
+    const weatherScore = 1 - metadata.weatherRiskScore;
+
+    const confidenceBonus = liveConditions.confidence === 'High'
+      ? 0.05
+      : liveConditions.confidence === 'Medium'
+        ? 0.025
+        : 0;
+
+    const score =
+      etaScore * 0.45 +
+      distanceScore * 0.15 +
+      fuelScore * 0.15 +
+      tollScore * 0.10 +
+      trafficScore * 0.08 +
+      weatherScore * 0.07 +
+      confidenceBonus;
+
+    return { id: route.id, score };
+  });
+
+  const scoreLookup = Object.fromEntries(routeScores.map(({ id, score }) => [id, score]));
+
+  return [...routes].sort((a, b) => (scoreLookup[b.id] ?? 0) - (scoreLookup[a.id] ?? 0));
 }
 
 /**
@@ -339,7 +415,7 @@ export async function generateAlternativeRoutes(
     // 2. Enrich each route with metadata
     const enrichedRoutes: RouteOption[] = await Promise.all(
       osrmRoutes.slice(0, maxAlternatives).map(async (route, index) => {
-        const metadata = calculateRouteMetadata(route);
+        const metadata = calculateRouteMetadata(route, index);
         const liveConditions = await getLiveConditions(route.path);
         
         // Update current ETA with live conditions
@@ -375,7 +451,7 @@ export async function generateAlternativeRoutes(
     
     // Fallback: return single route
     const fallbackRoute = await fetchOSRMRoute([origin, destination]);
-    const metadata = calculateRouteMetadata(fallbackRoute);
+    const metadata = calculateRouteMetadata(fallbackRoute, 0);
     const liveConditions = await getLiveConditions(fallbackRoute.path);
     
     metadata.currentETAMinutes = metadata.baseETAMinutes + liveConditions.estimatedDelay;

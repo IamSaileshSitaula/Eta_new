@@ -45,6 +45,8 @@ export interface Shipment {
   lastMileStops: Stop[];
   status: ShipmentStatus;
   currentLegIndex: number; // 0 for origin->hub, 1+ for last mile stops
+  currentLocation?: Coordinates;
+  currentEta?: string; // ISO Date string
 }
 
 export interface Route {

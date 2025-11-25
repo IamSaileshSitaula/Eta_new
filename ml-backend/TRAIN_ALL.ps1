@@ -14,20 +14,25 @@ if ($currentDir.Path -ne $mlBackendPath) {
     Set-Location $mlBackendPath
 }
 
-# Step 1: Create virtual environment
+# Step 1: Configure virtual environment
 Write-Host ""
-Write-Host "Step 1: Creating virtual environment..." -ForegroundColor Cyan
-if (Test-Path "venv") {
-    Write-Host "   ✅ Virtual environment already exists" -ForegroundColor Green
-} else {
+Write-Host "Step 1: Configuring virtual environment..." -ForegroundColor Cyan
+
+$venvPath = ".\venv"
+if (Test-Path "..\venv") {
+    $venvPath = "..\venv"
+    Write-Host "   ✅ Found shared virtual environment at ..\venv" -ForegroundColor Green
+} elseif (-not (Test-Path "venv")) {
     python -m venv venv
-    Write-Host "   ✅ Virtual environment created" -ForegroundColor Green
+    Write-Host "   ✅ Created local virtual environment at .\venv" -ForegroundColor Green
+} else {
+    Write-Host "   ✅ Found local virtual environment at .\venv" -ForegroundColor Green
 }
 
 # Step 2: Activate virtual environment
 Write-Host ""
 Write-Host "Step 2: Activating virtual environment..." -ForegroundColor Cyan
-& .\venv\Scripts\Activate.ps1
+& "$venvPath\Scripts\Activate.ps1"
 Write-Host "   ✅ Virtual environment activated" -ForegroundColor Green
 
 # Step 3: Install PyTorch with CUDA
@@ -46,8 +51,8 @@ Write-Host "   ✅ All dependencies installed" -ForegroundColor Green
 # Step 4.5: Verify HuggingFace datasets
 Write-Host ""
 Write-Host "Step 4.5: Verifying HuggingFace datasets..." -ForegroundColor Cyan
-$hfCheck = python -c "try:`n    import datasets; print('True')`nexcept:`n    print('False')"
-if ($hfCheck -eq "True") {
+python -c "import datasets" 2>$null
+if ($LASTEXITCODE -eq 0) {
     Write-Host "   ✅ HuggingFace datasets available - will use real LaDe data!" -ForegroundColor Green
 } else {
     Write-Host "   ⚠️  HuggingFace datasets not available - will use synthetic data" -ForegroundColor Yellow
@@ -57,10 +62,10 @@ if ($hfCheck -eq "True") {
 # Step 5: Verify GPU
 Write-Host ""
 Write-Host "Step 5: Verifying GPU access..." -ForegroundColor Cyan
-python -c "import torch; print(f'GPU Available: {torch.cuda.is_available()}'); print(f'GPU Name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
+python -c "import torch; print(f'GPU Available: {torch.cuda.is_available()}'); print(f'GPU Name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'None'}')"
 
-$gpuCheck = python -c "import torch; print(torch.cuda.is_available())"
-if ($gpuCheck -eq "True") {
+python -c "import torch; exit(0 if torch.cuda.is_available() else 1)"
+if ($LASTEXITCODE -eq 0) {
     Write-Host "   ✅ RTX 4060 detected and ready!" -ForegroundColor Green
 } else {
     Write-Host "   ⚠️  WARNING: GPU not detected. Training will be slower." -ForegroundColor Yellow

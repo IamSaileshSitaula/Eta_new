@@ -148,7 +148,10 @@ const TrackingView: React.FC<TrackingViewProps> = ({ trackingNumber, role, shipm
         )}
 
         <div className="grid grid-cols-2 gap-4">
-          <StatusCard icon="clock" title="ETA to Next Stop" value={`${eta} min`} colorClass="bg-blue-500" subtext={nextStop?.name}/>
+          <StatusCard icon="clock" title="ETA to Next Stop" value={(() => {
+            const arrivalTime = new Date(Date.now() + eta * 60 * 1000);
+            return arrivalTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+          })()} colorClass="bg-blue-500" subtext={nextStop?.name}/>
           <StatusCard icon="pin" title="Confidence" value={confidence} colorClass={confidence === ConfidenceLevel.HIGH ? 'bg-green-500' : 'bg-yellow-500'} />
           <StatusCard icon="traffic" title="Traffic" value={traffic?.status || 'N/A'} colorClass="bg-red-500" subtext={traffic?.description} />
           <StatusCard icon="cloud" title="Weather" value={weather?.condition || 'N/A'} colorClass="bg-purple-500" subtext={weather?.description} />

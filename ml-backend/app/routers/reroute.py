@@ -20,38 +20,96 @@ logger = logging.getLogger(__name__)
 # Placeholder for trained model
 TRAINED_MODEL = None
 
-# Graph Neural Network Model Architecture (same as training)
-class RouteGNN(nn.Module):
-    """Graph Neural Network for route optimization"""
-    def __init__(self, node_features=8, hidden_dim=64):
-        super().__init__()
-        self.node_encoder = nn.Linear(node_features, hidden_dim)
-        self.gnn_layer1 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.gnn_layer2 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.gnn_layer3 = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.edge_scorer = nn.Linear(hidden_dim * 2, 1)
+# Graph Neural Network Model Architecture (matches training script)
+class GraphAttentionLayer(nn.Module):
+    """Graph Attention Layer"""
+    
+    def __init__(self, in_dim, out_dim):
+        super(GraphAttentionLayer, self).__init__()
         
-    def forward(self, node_features, adjacency_matrix):
-        # Encode nodes
-        h = F.relu(self.node_encoder(node_features))
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.attention = nn.Linear(2 * out_dim, 1)
+        self.leaky_relu = nn.LeakyReLU(0.2)
         
-        # GNN layers
-        for gnn_layer in [self.gnn_layer1, self.gnn_layer2, self.gnn_layer3]:
-            h_neighbors = torch.matmul(adjacency_matrix, h)
-            h_concat = torch.cat([h, h_neighbors], dim=-1)
-            h = F.relu(gnn_layer(h_concat))
+    def forward(self, x, edge_index):
+        # Transform features
+        x_transformed = self.linear(x)
         
-        # Score all edges
-        num_nodes = node_features.size(0)
-        edge_scores = torch.zeros(num_nodes, num_nodes)
+        # Compute attention coefficients
+        num_nodes = x.size(0)
+        attention_input = []
         
         for i in range(num_nodes):
             for j in range(num_nodes):
                 if i != j:
-                    edge_input = torch.cat([h[i], h[j]], dim=0)
-                    edge_scores[i, j] = self.edge_scorer(edge_input).squeeze()
+                    pair = torch.cat([x_transformed[i], x_transformed[j]])
+                    attention_input.append(pair)
         
-        return edge_scores
+        if attention_input:
+            attention_input = torch.stack(attention_input)
+            attention_scores = self.leaky_relu(self.attention(attention_input))
+            attention_scores = torch.softmax(attention_scores.view(num_nodes, num_nodes-1), dim=1)
+            
+            # Aggregate
+            output = []
+            for i in range(num_nodes):
+                neighbors = [j for j in range(num_nodes) if j != i]
+                neighbor_features = x_transformed[neighbors]
+                weights = attention_scores[i].unsqueeze(1)
+                aggregated = (neighbor_features * weights).sum(dim=0)
+                output.append(x_transformed[i] + aggregated)
+            
+            output = torch.stack(output)
+        else:
+            output = x_transformed
+        
+        return torch.relu(output)
+
+
+class RouteGNN(nn.Module):
+    """Graph Neural Network for route optimization"""
+    
+    def __init__(self, node_dim=5, edge_dim=2, hidden_dim=128):
+        super(RouteGNN, self).__init__()
+        
+        # Node and edge encoders
+        self.node_encoder = nn.Sequential(
+            nn.Linear(node_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        self.edge_encoder = nn.Sequential(
+            nn.Linear(edge_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        # Graph attention layers
+        self.gat1 = GraphAttentionLayer(hidden_dim, hidden_dim)
+        self.gat2 = GraphAttentionLayer(hidden_dim, hidden_dim)
+        self.gat3 = GraphAttentionLayer(hidden_dim, hidden_dim)
+        
+        # Pointer network for sequence prediction
+        self.pointer_query = nn.Linear(hidden_dim, hidden_dim)
+        self.pointer_key = nn.Linear(hidden_dim, hidden_dim)
+        
+    def forward(self, node_features, edge_index, edge_attr=None):
+        # Encode nodes
+        node_embed = self.node_encoder(node_features)
+        
+        # Apply graph attention layers
+        node_embed = self.gat1(node_embed, edge_index)
+        node_embed = self.gat2(node_embed, edge_index)
+        node_embed = self.gat3(node_embed, edge_index)
+        
+        # Compute attention scores for ordering
+        query = self.pointer_query(node_embed[0:1])
+        keys = self.pointer_key(node_embed[1:])
+        
+        scores = torch.matmul(query, keys.transpose(0, 1)) / torch.sqrt(torch.tensor(query.size(-1), dtype=torch.float32))
+        
+        return scores
 
 class StopLocation(BaseModel):
     lat: float
@@ -285,9 +343,16 @@ def load_reroute_model(model_path: str):
             TRAINED_MODEL = None
             return
         
-        # Load model
-        model = RouteGNN(node_features=8, hidden_dim=64)
-        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+        # Load model with correct architecture
+        model = RouteGNN(node_dim=5, edge_dim=2, hidden_dim=128)
+        checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+        
+        # Handle checkpoint format (either direct state_dict or nested)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+        
         model.eval()
         
         TRAINED_MODEL = model

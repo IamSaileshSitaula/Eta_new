@@ -155,12 +155,15 @@ export const getWeatherDelay = (weather: WeatherData | null, distanceMiles: numb
   
   if (multiplier >= 1.0) return 0;
   
+  // Cap the affected distance to 50 miles (assume weather is regional, not entire route)
+  const affectedDistance = Math.min(distanceMiles, 50);
+
   // Calculate additional time due to slower speed
   // Assuming base speed of 55 mph
   const baseSpeed = 55;
   const adjustedSpeed = baseSpeed * multiplier;
-  const normalTime = (distanceMiles / baseSpeed) * 60; // minutes
-  const adjustedTime = (distanceMiles / adjustedSpeed) * 60;
+  const normalTime = (affectedDistance / baseSpeed) * 60; // minutes
+  const adjustedTime = (affectedDistance / adjustedSpeed) * 60;
   
   return Math.round(adjustedTime - normalTime);
 };

@@ -90,7 +90,7 @@ const StopSequencer: React.FC<StopSequencerProps> = ({
     }
   };
 
-  const hasOptimization = optimizationResult && optimizationResult.timeSavings > 3;
+  const hasOptimization = optimizationResult && optimizationResult.timeSavings > 0;
 
   return (
     <div className="stop-sequencer bg-white rounded-lg shadow-md p-4">

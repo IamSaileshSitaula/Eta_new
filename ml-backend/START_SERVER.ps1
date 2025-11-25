@@ -11,7 +11,14 @@ Set-Location $mlBackendPath
 
 # Activate virtual environment
 Write-Host "📦 Activating virtual environment..." -ForegroundColor Cyan
-& .\venv\Scripts\Activate.ps1
+if (Test-Path "..\venv\Scripts\Activate.ps1") {
+    & ..\venv\Scripts\Activate.ps1
+} elseif (Test-Path ".\venv\Scripts\Activate.ps1") {
+    & .\venv\Scripts\Activate.ps1
+} else {
+    Write-Host "❌ Virtual environment not found! Please run setup first." -ForegroundColor Red
+    exit 1
+}
 
 # Check if models exist
 Write-Host ""

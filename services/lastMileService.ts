@@ -4,8 +4,7 @@
  */
 
 import { Stop, Coordinates } from '../types';
-
-const ML_BACKEND_URL = 'http://localhost:8000';
+import { mlService } from './mlBackendService';
 
 export interface OptimizationRequest {
   stops: Stop[];
@@ -56,26 +55,25 @@ export async function optimizeStopSequence(
   request: OptimizationRequest
 ): Promise<OptimizationResult> {
   try {
-      const response = await fetch(`${ML_BACKEND_URL}/api/reroute/last-mile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        stops: request.stops.map(s => ({
-          id: s.id,
-          name: s.name,
-          coordinates: coordsToLatLng(s.location),
-          unloadingTimeMinutes: s.unloadingTimeMinutes || 0,
-          priority: request.constraints?.priorityStops?.includes(s.id) ? 1 : 0
-        })),
-        vehiclePosition: request.vehicleStartPosition,
-        currentSequence: request.currentSequence || request.stops.map(s => s.id),
-        constraints: request.constraints
-      })
-    });    if (!response.ok) {
-      throw new Error(`ML backend error: ${response.status}`);
-    }
+    // Use the centralized ML service
+    const data = await mlService.optimizeRoute({
+      currentLocation: request.vehicleStartPosition || { lat: 0, lng: 0 },
+      remainingStops: request.stops.map(s => ({
+        id: s.id,
+        name: s.name,
+        location: coordsToLatLng(s.location),
+        unloadingTimeMinutes: s.unloadingTimeMinutes || 0
+      })),
+      currentTraffic: { congestionLevel: 'light', currentSpeed: 30 },
+      currentWeather: { description: 'clear' },
+      timeOfDay: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+      dayOfWeek: new Date().toLocaleDateString('en-US', { weekday: 'long' })
+    });
 
-    const data = await response.json();
+    if (!data) {
+      console.warn('ML backend returned null, using fallback optimization.');
+      return fallbackOptimization(request);
+    }
 
     return {
       optimizedSequence: data.optimized_sequence,
@@ -88,7 +86,7 @@ export async function optimizeStopSequence(
       comparisonMetrics: data.comparison_metrics || buildDefaultComparison(request.stops)
     };
   } catch (error) {
-    console.error('Last-mile optimization failed:', error);
+    console.warn('Last-mile optimization connection failed, using fallback:', error);
     
     // Fallback: Greedy nearest-neighbor heuristic
     return fallbackOptimization(request);
@@ -158,11 +156,20 @@ function fallbackOptimization(request: OptimizationRequest): OptimizationResult 
   const timeSavings = (currentDist - totalDistance) * 2; // ~2 min per mile
   const distanceSavings = currentDist - totalDistance;
 
+  // Calculate dynamic confidence based on improvement
+  // Higher savings = higher confidence that this is a better route
+  const improvementRatio = currentDist > 0 ? (currentDist - totalDistance) / currentDist : 0;
+  let calculatedConfidence = 0.65; // Base confidence for heuristic
+
+  if (improvementRatio > 0.25) calculatedConfidence = 0.85; // Significant improvement
+  else if (improvementRatio > 0.15) calculatedConfidence = 0.75; // Moderate improvement
+  else if (improvementRatio > 0.05) calculatedConfidence = 0.70; // Slight improvement
+
   return {
     optimizedSequence: optimized,
     timeSavings: Math.max(0, timeSavings),
     distanceSavings: Math.max(0, distanceSavings),
-    confidence: 0.65, // Medium confidence for heuristic
+    confidence: calculatedConfidence,
     routePath,
     estimatedDurations: buildEstimatedDurations(optimized, stops),
     reasoning: 'Optimized using nearest-neighbor heuristic (ML backend unavailable)',

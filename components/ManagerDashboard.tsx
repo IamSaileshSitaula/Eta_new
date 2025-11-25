@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useShipmentData } from '../hooks/useShipmentData';
 import { UserRole, ConfidenceLevel, Stop, Shipment } from '../types';
 import Map, { OtherShipmentMapData } from './Map';
@@ -19,8 +19,8 @@ interface ManagerDashboardProps {
   onShipmentUpdate: (shipmentId: string, updatedShipment: Shipment) => void;
 }
 
-const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ 
-  trackingNumber: initialTrackingNumber, 
+const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
+  trackingNumber: initialTrackingNumber,
   shipment: initialShipment,
   allShipments,
   trackingNumberMap,
@@ -37,6 +37,17 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
   // Get data for the currently selected shipment
   const currentShipmentData = shipmentsData[selectedShipmentId];
 
+  const lastUpdateRef = React.useRef(0);
+
+  // Sync updated shipment data back to App (throttled)
+  useEffect(() => {
+    const now = Date.now();
+    if (currentShipmentData && currentShipmentData.shipment && now - lastUpdateRef.current > 2000) {
+       onShipmentUpdate(selectedShipmentId, currentShipmentData.shipment);
+       lastUpdateRef.current = now;
+    }
+  }, [currentShipmentData, selectedShipmentId, onShipmentUpdate]);
+
   const handleTrackerUpdate = (id: string, data: ShipmentTrackerData) => {
     setShipmentsData(prev => ({
       ...prev,
@@ -46,13 +57,13 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
 
   const handleAddShipment = () => {
     if (!newTrackingNumber) return;
-    
+
     const info = trackingNumberMap[newTrackingNumber];
     if (!info) {
       setAddError('Invalid tracking number');
       return;
     }
-    
+
     const shipmentId = info.shipmentId;
     if (activeShipmentIds.includes(shipmentId)) {
       setAddError('Shipment already added');
@@ -98,13 +109,20 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
 
   // Multi-route state
   const [availableRoutes, setAvailableRoutes] = useState<RouteOption[]>([]);
-  const [activeRouteId, setActiveRouteId] = useState<string>('route-1');
+  const [activeRouteId, setActiveRouteId] = useState<string>('');
+  const [recommendedRouteId, setRecommendedRouteId] = useState<string>('');
   const [isLoadingRoutes, setIsLoadingRoutes] = useState(false);
   const [currentRouteOption, setCurrentRouteOption] = useState<RouteOption | null>(null);
-  const [userSelectedRoute, setUserSelectedRoute] = useState(false); // Track if user manually selected a route
+  const [preferredRouteId, setPreferredRouteId] = useState<string | null>(null);
   const [lastLegIndex, setLastLegIndex] = useState<number>(-1); // Track when we move to a new leg
   const [hasFirstUpdate, setHasFirstUpdate] = useState(false); // Track if first 60s update has happened
   const [timeDisplay, setTimeDisplay] = useState({ lastUpdate: '0s ago', nextUpdate: '60s' });
+
+  // Track preferred route id for asynchronous callbacks
+  const preferredRouteIdRef = useRef<string | null>(preferredRouteId);
+  useEffect(() => {
+    preferredRouteIdRef.current = preferredRouteId;
+  }, [preferredRouteId]);
 
   // Safe defaults for hooks when data is loading
   const safeVisibleStops = currentShipmentData?.visibleStops || [];
@@ -112,24 +130,28 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
   const safeCurrentShipment = currentShipmentData?.shipment;
   const safeUpdateStopSequence = currentShipmentData?.updateStopSequence;
 
-  // Last-mile stop optimization
+  // Last-mile stop optimization (exclude hub and origin, only actual delivery stops)
   const lastMileOpt = useLastMileOptimization({
-    stops: safeVisibleStops.filter(s => s.status !== 'Completed'),
+    stops: safeVisibleStops.filter(s => 
+      s.status !== 'Completed' && 
+      s.id !== safeCurrentShipment?.hub?.id && 
+      s.id !== safeCurrentShipment?.origin?.id
+    ),
     vehiclePosition: safeTruckPosition ? { lat: safeTruckPosition[0], lng: safeTruckPosition[1] } : undefined,
     onSequenceChange: (newSequenceIds) => {
       if (!safeCurrentShipment || !safeUpdateStopSequence) return;
 
       console.log('📋 Stop sequence updated via optimization/reorder:', newSequenceIds);
-      
+
       // Reconstruct the full lastMileStops list
       // 1. Get completed stops (which were not part of reordering)
       const completedStops = safeCurrentShipment.lastMileStops.filter(s => s.status === 'Completed');
-      
+
       // 2. Map the new sequence IDs back to Stop objects
       const reorderedActiveStops = newSequenceIds
         .map(id => safeCurrentShipment.lastMileStops.find(s => s.id === id))
         .filter((s): s is Stop => s !== undefined);
-        
+
       // 3. Combine completed + reordered active stops
       if (reorderedActiveStops.length > 0) {
         const newLastMileStops = [...completedStops, ...reorderedActiveStops];
@@ -156,34 +178,59 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
   }, []); // Run once on mount
 
   // Destructure current data for easier usage with safe defaults
-  const { 
-    shipment: currentShipment, 
-    truckPosition, 
-    eta = 0, 
-    confidence = ConfidenceLevel.HIGH, 
-    traffic = null, 
-    weather = null, 
-    delayReason = null, 
-    visiblePath = [], 
-    visibleStops = [], 
-    currentSpeed = 0, 
-    isUnloading = false, 
-    unloadingTimeRemaining = 0, 
-    currentUnloadingStop = null, 
+  const {
+    shipment: currentShipment,
+    truckPosition,
+    eta = 0,
+    confidence = ConfidenceLevel.HIGH,
+    traffic = null,
+    weather = null,
+    delayReason = null,
+    visiblePath = [],
+    visibleStops = [],
+    currentSpeed = 0,
+    isUnloading = false,
+    unloadingTimeRemaining = 0,
+    currentUnloadingStop = null,
     switchRoute,
     updateStopSequence
   } = currentShipmentData || {};
 
   // Mock missing values that were previously returned by useShipmentData but not in ShipmentTrackerData
-  const isLoading = false; 
-  const lastApiUpdate = new Date();
+  const isLoading = false;
+  const lastApiUpdate = currentShipmentData?.lastApiUpdate || new Date();
   const nextApiUpdate = new Date(Date.now() + 60000);
 
-  // Reset user selection when moving to a new leg
+  // Generate custom labels for map markers
+  const stopLabels = useMemo(() => {
+    if (!currentShipment) return {};
+    const labels: Record<string, string> = {};
+
+    // Origin
+    if (currentShipment.origin) labels[currentShipment.origin.id] = 'O';
+
+    // Hub
+    if (currentShipment.hub) labels[currentShipment.hub.id] = 'D';
+
+    // Long Haul
+    currentShipment.longHaulStops?.forEach((stop, i) => {
+      labels[stop.id] = `S${i + 1}`;
+    });
+
+    // Last Mile
+    currentShipment.lastMileStops?.forEach((stop, i) => {
+      labels[stop.id] = `${i + 1}`;
+    });
+
+    return labels;
+  }, [currentShipment]);
+
+  // Reset preferred route when moving to a new leg
   useEffect(() => {
     if (!currentShipment) return;
     if (currentShipment.currentLegIndex !== lastLegIndex) {
-      setUserSelectedRoute(false); // Reset selection for new leg
+      setPreferredRouteId(null);
+      preferredRouteIdRef.current = null;
       setLastLegIndex(currentShipment.currentLegIndex);
       console.log(`🔄 Moved to leg ${currentShipment.currentLegIndex}, resetting route selection`);
     }
@@ -202,13 +249,13 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
         // console.log('⚠️ Cannot generate routes - missing truckPosition or visibleStops', { truckPosition, visibleStopsCount: visibleStops.length });
         return;
       }
-      
+
       const nextStop = visibleStops[currentShipment.currentLegIndex + 1];
       if (!nextStop) {
         // console.log('⚠️ No next stop found for route generation', { currentLegIndex: currentShipment.currentLegIndex, visibleStopsCount: visibleStops.length });
         return;
       }
-      
+
       console.log(`🛣️ Generating routes from [${truckPosition[0].toFixed(4)}, ${truckPosition[1].toFixed(4)}] to ${nextStop.name}`);
       setIsLoadingRoutes(true);
       try {
@@ -217,64 +264,64 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
           nextStop.location,
           { includeHighways: true, includeTolls: true, maxAlternatives: 3 }
         );
-        
+
         setAvailableRoutes(result.routes);
+        setRecommendedRouteId(result.recommended);
         console.log(`✅ Generated ${result.routes.length} routes:`, result.routes.map(r => `${r.id} (${r.metadata.routeType}, ETA: ${r.metadata.currentETAMinutes}min)`));
         console.log(`📍 Recommended route: ${result.recommended}`);
-        
-        // Only auto-select recommended route if user hasn't manually selected one
-        if (!userSelectedRoute) {
-          setActiveRouteId(result.recommended);
-          const active = result.routes.find(r => r.id === result.recommended);
-          setCurrentRouteOption(active || result.routes[0]);
-          console.log(`🎯 Auto-selected recommended route: ${result.recommended}`);
+
+        const preferredId = preferredRouteIdRef.current;
+        const preferredRoute = preferredId ? result.routes.find(r => r.id === preferredId) : null;
+        let nextRoute = preferredRoute;
+        let nextRouteId = preferredRoute?.id || '';
+
+        if (preferredRoute) {
+          console.log(`🔒 Preserving preferred route: ${preferredRouteIdRef.current}`);
         } else {
-          // Preserve user's selection - update the route object but keep the same ID
-          const userRoute = result.routes.find(r => r.id === activeRouteId);
-          if (userRoute) {
-            setCurrentRouteOption(userRoute);
-            console.log(`🔒 Preserved user-selected route: ${activeRouteId}`);
-          } else {
-            // If user's selected route no longer exists, fall back to recommended
-            setActiveRouteId(result.recommended);
-            const active = result.routes.find(r => r.id === result.recommended);
-            setCurrentRouteOption(active || result.routes[0]);
-            setUserSelectedRoute(false);
-            console.log(`⚠️ User route ${activeRouteId} not found, reverted to recommended`);
+          if (preferredId) {
+            console.log(`⚠️ Preferred route ${preferredId} unavailable, falling back to recommendation`);
+            setPreferredRouteId(null);
+            preferredRouteIdRef.current = null;
           }
+          nextRoute = result.routes.find(r => r.id === result.recommended) || result.routes[0];
+          nextRouteId = nextRoute?.id || '';
         }
+
+        setActiveRouteId(nextRouteId);
+        setCurrentRouteOption(nextRoute || null);
+        console.log(`🎯 Active route set to ${nextRouteId}`);
       } catch (error) {
         console.error('❌ Error generating routes:', error);
       } finally {
         setIsLoadingRoutes(false);
       }
     };
-    
+
     generateRoutes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasFirstUpdate, truckPosition, currentShipment?.currentLegIndex, visibleStops]);
-  // Note: userSelectedRoute and activeRouteId intentionally excluded to prevent infinite loops
+  // Note: preferredRouteId intentionally excluded to prevent unnecessary regeneration loops
 
   useEffect(() => {
     const updateTimer = () => {
       if (!lastApiUpdate) return;
-      
+
       const now = new Date();
       const secondsSinceUpdate = Math.floor((now.getTime() - lastApiUpdate.getTime()) / 1000);
-      
+
       const formatTime = (seconds: number) => {
         if (seconds < 60) return `${seconds}s ago`;
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
         return `${mins}:${secs.toString().padStart(2, '0')} ago`;
       };
-      
+
       setTimeDisplay({
         lastUpdate: formatTime(secondsSinceUpdate),
         nextUpdate: '' // Not used anymore
       });
     };
-    
+
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
@@ -283,13 +330,14 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
   // Handle route selection
   const handleRouteSelect = (routeId: string) => {
     setActiveRouteId(routeId);
-    setUserSelectedRoute(true); // Mark that user manually selected a route
+    setPreferredRouteId(routeId);
+    preferredRouteIdRef.current = routeId;
     const selected = availableRoutes.find(r => r.id === routeId);
     if (selected) {
       setCurrentRouteOption(selected);
       console.log(`🔄 User selected route: ${routeId} (${selected.metadata.routeType})`);
       console.log(`📍 Route locked to user selection - will persist across updates`);
-      
+
       // Switch the simulation to follow the new route from current position
       if (switchRoute) {
         switchRoute(selected.path, selected.segments);
@@ -310,7 +358,7 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
             const shipment = allShipments[id];
             if (!shipment) return null; // Skip if shipment not found
             return (
-              <ShipmentTracker 
+              <ShipmentTracker
                 key={id}
                 shipment={shipment}
                 role={UserRole.MANAGER}
@@ -332,8 +380,8 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
   const nextStop = visibleStops[currentLegIndex + 1];
 
   // Use active route's path if available, otherwise fall back to default visible path
-  const displayPath = userSelectedRoute && currentRouteOption 
-    ? currentRouteOption.path 
+  const displayPath = preferredRouteId && currentRouteOption
+    ? currentRouteOption.path
     : visiblePath;
 
   return (
@@ -344,9 +392,8 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
           <button
             key={id}
             onClick={() => setSelectedShipmentId(id)}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-              selectedShipmentId === id ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-            }`}
+            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${selectedShipmentId === id ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+              }`}
             title={`Switch to ${id}`}
           >
             <Icon name="truck" className="h-6 w-6" />
@@ -363,19 +410,20 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
 
       {/* Map Area */}
       <div className="flex-1 h-1/2 md:h-full relative">
-        <Map 
-          truckPosition={truckPosition} 
-          routePath={displayPath} 
-          stops={visibleStops} 
-          currentSpeed={currentSpeed} 
+        <Map
+          truckPosition={truckPosition}
+          routePath={displayPath}
+          stops={visibleStops}
+          currentSpeed={currentSpeed}
           isUnloading={isUnloading}
           unloadingMinutesRemaining={Math.ceil(unloadingTimeRemaining / 60)}
           alternativeRoutes={availableRoutes}
           activeRouteId={activeRouteId}
           onRouteSelect={handleRouteSelect}
           otherShipments={mapData?.otherShipments}
+          customStopLabels={stopLabels}
         />
-        
+
         {/* Add Shipment Modal */}
         {isAddingShipment && (
           <div className="absolute top-4 left-4 z-[1000] bg-white p-4 rounded-lg shadow-xl border border-gray-200 w-72">
@@ -389,13 +437,13 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
             />
             {addError && <p className="text-red-500 text-xs mb-2">{addError}</p>}
             <div className="flex justify-end space-x-2">
-              <button 
+              <button
                 onClick={() => setIsAddingShipment(false)}
                 className="px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded"
               >
                 Cancel
               </button>
-              <button 
+              <button
                 onClick={handleAddShipment}
                 className="px-3 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700"
               >
@@ -438,29 +486,31 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
         )}
 
         <div className="grid grid-cols-2 gap-4">
-          <StatusCard icon="clock" title="ETA to Next Stop" value={`${eta} min`} colorClass="bg-blue-500" subtext={nextStop?.name} />
+          <StatusCard icon="clock" title="ETA to Next Stop" value={(() => {
+            const arrivalTime = new Date(Date.now() + eta * 60 * 1000);
+            return arrivalTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+          })()} colorClass="bg-blue-500" subtext={nextStop?.name} />
           <StatusCard icon="pin" title="Confidence" value={confidence} colorClass={confidence === ConfidenceLevel.HIGH ? 'bg-green-500' : 'bg-yellow-500'} />
           <StatusCard icon="traffic" title="Traffic" value={traffic?.status || 'N/A'} colorClass="bg-red-500" subtext={traffic?.description} />
           <StatusCard icon="cloud" title="Weather" value={weather?.condition || 'N/A'} colorClass="bg-purple-500" subtext={weather?.description} />
         </div>
-        
-        {delayReason && (
-          <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md" role="alert">
-            <p className="font-bold">Delay Information</p>
-            <p>{delayReason}</p>
-          </div>
-        )}
-        
+
+        {/* Delay Information removed for Manager view as requested */}
+
         {/* Multi-Route Selector */}
-        {availableRoutes.length > 0 && (
+        {availableRoutes.length > 0 && eta > 0 && (
           <RouteSelector
+            currentETA={eta}
             routes={availableRoutes}
             activeRouteId={activeRouteId}
+            recommendedRouteId={recommendedRouteId}
+            trafficData={traffic}
+            weatherData={weather}
             onSelectRoute={handleRouteSelect}
             truckPosition={truckPosition}
           />
         )}
-        
+
         {isLoadingRoutes && (
           <div className="bg-blue-50 border border-blue-200 text-blue-700 p-3 rounded-md text-sm">
             <div className="flex items-center space-x-2">
@@ -471,59 +521,54 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
         )}
 
         {/* Stop Sequencer - Last-Mile Optimization */}
-        {currentShipment.status !== 'Delivered' && 
-         visibleStops.filter(s => s.status !== 'Completed').length >= 2 && (
-          <div className="bg-white p-4 rounded-lg shadow-md">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center space-x-2">
-                <Icon name="route" className="h-5 w-5 text-indigo-600" />
-                <h3 className="font-semibold text-lg">Stop Resequencing</h3>
-              </div>
-              <button
-                onClick={lastMileOpt.requestOptimization}
-                disabled={lastMileOpt.isOptimizing}
-                className="px-3 py-1 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {lastMileOpt.isOptimizing ? 'Optimizing...' : '✨ Optimize Route'}
-              </button>
+        {currentShipment.status !== 'Delivered' &&
+          visibleStops.filter(s => 
+            s.status !== 'Completed' && 
+            s.id !== currentShipment?.hub?.id && 
+            s.id !== currentShipment?.origin?.id
+          ).length >= 2 && (
+            <div className="bg-white p-4 rounded-lg shadow-md">
+              <StopSequencer
+                stops={visibleStops.filter(s => 
+                  s.status !== 'Completed' && 
+                  s.id !== currentShipment?.hub?.id && 
+                  s.id !== currentShipment?.origin?.id
+                )}
+                onSequenceChange={(newSequence) => {
+                  console.log('🔄 Manual reorder:', newSequence);
+                  lastMileOpt.manuallyReorderStops(newSequence);
+                }}
+                onRequestOptimization={lastMileOpt.requestOptimization}
+                optimizationResult={lastMileOpt.optimizationResult}
+                onAcceptOptimization={() => {
+                  console.log('✅ Accepting optimization');
+                  lastMileOpt.acceptOptimization();
+                }}
+              />
+              {lastMileOpt.error && (
+                <div className="mt-2 text-sm text-red-600">
+                  ⚠️ {lastMileOpt.error}
+                </div>
+              )}
             </div>
-            <StopSequencer
-              stops={visibleStops.filter(s => s.status !== 'Completed')}
-              onSequenceChange={(newSequence) => {
-                console.log('🔄 Manual reorder:', newSequence);
-                lastMileOpt.manuallyReorderStops(newSequence);
-              }}
-              onRequestOptimization={lastMileOpt.requestOptimization}
-              optimizationResult={lastMileOpt.optimizationResult}
-              onAcceptOptimization={() => {
-                console.log('✅ Accepting optimization');
-                lastMileOpt.acceptOptimization();
-              }}
-            />
-            {lastMileOpt.error && (
-              <div className="mt-2 text-sm text-red-600">
-                ⚠️ {lastMileOpt.error}
-              </div>
-            )}
-          </div>
-        )}
+          )}
 
         <div className="bg-white p-4 rounded-lg shadow-md">
-            <h3 className="font-semibold text-lg mb-2">Shipment Details</h3>
-            <p><strong>Status:</strong> <span className="font-medium text-indigo-600">{currentShipment.status}</span></p>
-            <div className="mt-2">
-                <p><strong>Manifest:</strong></p>
-                <ul className="list-disc list-inside text-sm text-gray-700 space-y-1 mt-1 pl-2">
-                    {currentShipment.shipmentItems.map(item => {
-                        const stop = visibleStops.find(s => s.id === item.destinationStopId);
-                        return (
-                            <li key={item.id}>
-                                <span className="font-semibold text-indigo-600">{item.quantity}x</span> {item.contents} <span className="text-gray-500">to {stop?.name || 'Unknown'}</span>
-                            </li>
-                        );
-                    })}
-                </ul>
-            </div>
+          <h3 className="font-semibold text-lg mb-2">Shipment Details</h3>
+          <p><strong>Status:</strong> <span className="font-medium text-indigo-600">{currentShipment.status}</span></p>
+          <div className="mt-2">
+            <p><strong>Manifest:</strong></p>
+            <ul className="list-disc list-inside text-sm text-gray-700 space-y-1 mt-1 pl-2">
+              {currentShipment.shipmentItems.map(item => {
+                const stop = visibleStops.find(s => s.id === item.destinationStopId);
+                return (
+                  <li key={item.id}>
+                    <span className="font-semibold text-indigo-600">{item.quantity}x</span> {item.contents} <span className="text-gray-500">to {stop?.name || 'Unknown'}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         </div>
 
         <div className="bg-white p-4 rounded-lg shadow-md">
@@ -542,29 +587,26 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
                   return 'Pending';
                 }
               })();
-              
+
               const isUnloadingAtThisStop = stop.status === 'Unloading' && stop.id === currentUnloadingStop;
-              
+
               return (
                 <li key={stop.id} className="flex items-start">
-                  <Icon 
-                    name={stop.status === 'Completed' ? 'check-circle' : 'x-circle'} 
-                    className={`h-6 w-6 mr-3 mt-1 ${
-                      stop.status === 'Completed' ? 'text-green-500' : 
-                      isUnloadingAtThisStop ? 'text-orange-500 animate-pulse' : 
-                      index === currentLegIndex + 1 ? 'text-blue-500' : 
-                      'text-gray-400'
-                    }`} 
+                  <Icon
+                    name={stop.status === 'Completed' ? 'check-circle' : 'x-circle'}
+                    className={`h-6 w-6 mr-3 mt-1 ${stop.status === 'Completed' ? 'text-green-500' :
+                        isUnloadingAtThisStop ? 'text-orange-500 animate-pulse' :
+                          index === currentLegIndex + 1 ? 'text-blue-500' :
+                            'text-gray-400'
+                      }`}
                   />
                   <div className="flex-1">
-                    <p className={`font-medium ${
-                      stop.status === 'Completed' ? 'text-gray-500' : 'text-gray-800'
-                    }`}>
+                    <p className={`font-medium ${stop.status === 'Completed' ? 'text-gray-500' : 'text-gray-800'
+                      }`}>
                       {stop.name}
                     </p>
-                    <p className={`text-sm ${
-                      isUnloadingAtThisStop ? 'text-orange-600 font-semibold' : 'text-gray-500'
-                    }`}>
+                    <p className={`text-sm ${isUnloadingAtThisStop ? 'text-orange-600 font-semibold' : 'text-gray-500'
+                      }`}>
                       {statusText}
                     </p>
                   </div>
@@ -580,7 +622,7 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
         const shipment = allShipments[id];
         if (!shipment) return null;
         return (
-          <ShipmentTracker 
+          <ShipmentTracker
             key={id}
             shipment={shipment}
             role={UserRole.MANAGER}

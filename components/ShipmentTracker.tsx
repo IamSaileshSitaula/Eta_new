@@ -17,6 +17,7 @@ export interface ShipmentTrackerData {
   isUnloading: boolean;
   unloadingTimeRemaining: number;
   currentUnloadingStop: string | null;
+  lastApiUpdate: Date;
   switchRoute: (newPath: Coordinates[], newSegments: RoadSegment[]) => void;
   updateStopSequence: (newLastMileStops: Stop[]) => void;
 }
@@ -46,7 +47,8 @@ const ShipmentTracker: React.FC<ShipmentTrackerProps> = ({ shipment, role, onUpd
     data.traffic,
     data.weather,
     data.delayReason,
-    data.currentSpeed
+    data.currentSpeed,
+    data.lastApiUpdate
   ]);
 
   return null;

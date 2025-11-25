@@ -34,6 +34,7 @@ export interface SupplierShipment {
   progress: number; // 0-100
   stops: StopInfo[];
   lastUpdate: Date;
+  delayExplanation?: string;
 }
 
 export interface ReceiverTrackingData {
@@ -52,6 +53,7 @@ export interface ReceiverTrackingData {
   };
   optimizationMessage?: string;
   notifications: ReceiverNotification[];
+  delayExplanation?: string;
 }
 
 export interface LocationInfo {
@@ -142,7 +144,7 @@ export class SupplierAPI {
    */
   async getSupplierShipment(shipmentId: string): Promise<SupplierShipment> {
     // TODO: Query database for shipment details
-    
+
     // Example query:
     // SELECT s.*, 
     //        origin.name as origin_name, origin.latitude as origin_lat, origin.longitude as origin_lng,
@@ -172,6 +174,7 @@ export class SupplierAPI {
       progress: 45,
       stops: [],
       lastUpdate: new Date(),
+      delayExplanation: 'Heavy traffic on I-10 is causing a 15-minute delay.',
     };
   }
 
@@ -180,7 +183,7 @@ export class SupplierAPI {
    */
   private async getRecentReroutes(shipmentId: string): Promise<RerouteNotification[]> {
     // TODO: Query reroute_events table
-    
+
     // Example query:
     // SELECT id, created_at, event_type, changes
     // FROM reroute_events
@@ -234,14 +237,14 @@ export class ReceiverAPI {
 
     // 3. Get shipment data
     const { shipmentId, recipientStopId } = trackingRecord;
-    
+
     if (!recipientStopId) {
       throw new Error('No recipient stop associated with this tracking number');
     }
 
     // 4. Get stop details
     const myStop = await this.getStopDetails(recipientStopId);
-    
+
     // 5. Get delivery position
     const { position, totalStops } = await this.getDeliveryPosition(shipmentId, recipientStopId);
 
@@ -264,6 +267,7 @@ export class ReceiverAPI {
       currentLocation,
       myStop,
       notifications,
+      delayExplanation: 'Weather conditions are slowing down the delivery slightly.',
     };
   }
 
@@ -272,7 +276,7 @@ export class ReceiverAPI {
    */
   private async getStopDetails(stopId: string): Promise<StopInfo> {
     // TODO: Query stops table
-    
+
     // Example query:
     // SELECT id, name, latitude, longitude, sequence_order, status,
     //        estimated_arrival_time, actual_arrival_time, unloading_time_minutes
@@ -300,7 +304,7 @@ export class ReceiverAPI {
     stopId: string
   ): Promise<{ position: number; totalStops: number }> {
     // TODO: Query stops table
-    
+
     // Example query:
     // SELECT sequence_order,
     //        (SELECT COUNT(*) FROM stops WHERE shipment_id = $1 AND stop_type = 'LAST_MILE') as total
@@ -319,7 +323,7 @@ export class ReceiverAPI {
    */
   private async getShipmentStatus(shipmentId: string): Promise<string> {
     // TODO: Query shipments table
-    
+
     // Example query:
     // SELECT status FROM shipments WHERE id = $1
 
@@ -331,7 +335,7 @@ export class ReceiverAPI {
    */
   private async getCurrentLocation(shipmentId: string): Promise<LocationInfo | undefined> {
     // TODO: Get real-time location from tracking system
-    
+
     // In production, this would query a real-time location service
     // For now, return undefined
     return undefined;
@@ -342,7 +346,7 @@ export class ReceiverAPI {
    */
   private async getNotifications(trackingNumber: string): Promise<ReceiverNotification[]> {
     // TODO: Query notifications table
-    
+
     // Example query:
     // SELECT id, notification_type, message, created_at, is_read
     // FROM notifications
@@ -369,7 +373,7 @@ export class ReceiverAPI {
   async markNotificationAsRead(trackingNumber: string, notificationId: string): Promise<void> {
     // Extract timestamp from notification ID
     const timestamp = new Date(parseInt(notificationId.split('-').pop() || '0'));
-    
+
     notificationPropagationService.markAsRead(trackingNumber, timestamp);
 
     // TODO: Update database
@@ -404,11 +408,11 @@ export class ReceiverAPI {
     confidence: number;
   }> {
     const trackingData = await this.getTrackingData(receiverTrackingNumber);
-    
+
     // Calculate window based on stop sequence
     const avgStopTime = 15; // minutes
     const variance = 10; // minutes per stop
-    
+
     const earliestOffset = -variance * trackingData.deliveryPosition;
     const latestOffset = variance * trackingData.deliveryPosition;
 

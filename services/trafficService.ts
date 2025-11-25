@@ -147,8 +147,11 @@ export const getTrafficDelay = (
   
   // If we have real speed data from TomTom Flow Segment API, use it for precise calculation
   if (traffic.currentSpeed && traffic.normalSpeed && traffic.currentSpeed > 0) {
-    const normalTimeMinutes = (distanceMiles / traffic.normalSpeed) * 60;
-    const currentTimeMinutes = (distanceMiles / traffic.currentSpeed) * 60;
+    // Cap the affected distance to 10 miles (assume traffic is local, not entire route)
+    const affectedDistance = Math.min(distanceMiles, 10);
+    
+    const normalTimeMinutes = (affectedDistance / traffic.normalSpeed) * 60;
+    const currentTimeMinutes = (affectedDistance / traffic.currentSpeed) * 60;
     return Math.max(0, Math.round(currentTimeMinutes - normalTimeMinutes));
   }
   

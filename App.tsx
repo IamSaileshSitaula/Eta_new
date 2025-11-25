@@ -5,7 +5,7 @@ import TrackingView from './components/TrackingView';
 import ManagerDashboard from './components/ManagerDashboard';
 import ShipmentCreator from './components/ShipmentCreator';
 import PostCreationInfo from './components/PostCreationInfo';
-import { UserRole, Shipment, Stop } from './types';
+import { UserRole, Shipment, Stop, ShipmentStatus } from './types';
 import { INITIAL_SHIPMENT, TRACKING_NUMBERS as DEMO_TRACKING_NUMBERS } from './constants';
 import Icon from './components/Icon';
 
@@ -33,6 +33,53 @@ interface GeneratedTrackingNumber {
   id: string;
 }
 
+const DEMO_SHIPMENT_ID = 'SHIP001';
+
+const cloneShipment = (shipment: Shipment): Shipment => JSON.parse(JSON.stringify(shipment));
+
+const resetStop = (stop: Stop): Stop => ({ ...stop, status: 'Pending' });
+
+const createFreshDemoShipment = (): Shipment => {
+  const base = cloneShipment(INITIAL_SHIPMENT);
+  return {
+    ...base,
+    origin: resetStop(base.origin),
+    hub: resetStop(base.hub),
+    longHaulStops: (base.longHaulStops || []).map(resetStop),
+    lastMileStops: (base.lastMileStops || []).map(resetStop),
+    currentLegIndex: 0,
+    status: ShipmentStatus.PENDING,
+    currentEta: undefined,
+    currentLocation: base.origin.location,
+  };
+};
+
+const migrateDemoShipments = (data: Record<string, Shipment>): Record<string, Shipment> => {
+  const copy: Record<string, Shipment> = { ...data };
+  const demo = copy[DEMO_SHIPMENT_ID];
+
+  const hasAustinOrigin = demo?.origin?.name?.toLowerCase().includes('austin') ?? false;
+  const originMismatch = demo?.origin?.location
+    ? Math.abs(demo.origin.location[0] - INITIAL_SHIPMENT.origin.location[0]) > 0.01 ||
+      Math.abs(demo.origin.location[1] - INITIAL_SHIPMENT.origin.location[1]) > 0.01
+    : true;
+  const hasLongHaul = (demo?.longHaulStops?.length ?? 0) > 0;
+  const insufficientLastMile = (demo?.lastMileStops?.length ?? 0) < 10;
+
+  const needsMigration = !demo || hasAustinOrigin || hasLongHaul || insufficientLastMile || originMismatch;
+
+  if (needsMigration) {
+    copy[DEMO_SHIPMENT_ID] = createFreshDemoShipment();
+    console.log('🧭 Migrated demo shipment SHIP001 to Beaumont-only last-mile scenario');
+  } else if (copy[DEMO_SHIPMENT_ID]) {
+    // Always start the demo in a fresh state for repeatable simulations
+    copy[DEMO_SHIPMENT_ID] = createFreshDemoShipment();
+    console.log('🔄 Reset demo shipment progress for fresh session');
+  }
+
+  return copy;
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<View>('home');
   const [session, setSession] = useState<UserSession | null>(null);
@@ -45,13 +92,13 @@ const App: React.FC = () => {
       if (stored) {
         const parsed = JSON.parse(stored);
         console.log('📦 Loaded shipments from localStorage:', Object.keys(parsed));
-        return parsed;
+        return migrateDemoShipments(parsed);
       }
     } catch (error) {
       console.error('Failed to load shipments from localStorage:', error);
     }
     // Return demo data if nothing in localStorage
-    return { 'SHIP001': INITIAL_SHIPMENT };
+    return migrateDemoShipments({ [DEMO_SHIPMENT_ID]: INITIAL_SHIPMENT });
   });
 
   const [trackingNumberMap, setTrackingNumberMap] = useState<Record<string, TrackingInfo>>(() => {
@@ -99,7 +146,12 @@ const App: React.FC = () => {
     const sessionData = trackingNumberMap[trackingNumber];
     if (sessionData) {
       console.log('✅ Found session data:', sessionData);
-      const shipmentData = shipments[sessionData.shipmentId];
+      let shipmentData = shipments[sessionData.shipmentId];
+      if (sessionData.shipmentId === DEMO_SHIPMENT_ID) {
+        shipmentData = createFreshDemoShipment();
+        setShipments(prev => ({ ...prev, [DEMO_SHIPMENT_ID]: shipmentData! }));
+        console.log('♻️ Resetting SUPPLIER123 demo shipment for new simulation');
+      }
       if (shipmentData) {
         console.log('✅ Found shipment data:', shipmentData.trackingNumber);
         setSession({
@@ -178,11 +230,14 @@ const App: React.FC = () => {
                />;
       case 'tracking':
         if (!session) return <LoginView onTrack={handleTrack} error="Session expired." onBack={() => setView('home')} />;
+        
+        const currentShipment = shipments[session.shipmentId] || session.shipment;
+        
         if (session.role === UserRole.MANAGER) {
           return (
             <ManagerDashboard 
               trackingNumber={session.trackingNumber} 
-              shipment={session.shipment}
+              shipment={currentShipment}
               allShipments={shipments}
               trackingNumberMap={trackingNumberMap}
               onShipmentUpdate={handleShipmentUpdate}
@@ -194,7 +249,7 @@ const App: React.FC = () => {
             trackingNumber={session.trackingNumber}
             role={session.role}
             recipientStopId={session.recipientStopId}
-            shipment={session.shipment}
+            shipment={currentShipment}
           />
         );
       default:

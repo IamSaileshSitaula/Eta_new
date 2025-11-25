@@ -7,6 +7,7 @@
 import { Stop, TrafficData, WeatherData, Coordinates } from '../types';
 import { fetchRealTrafficData } from './trafficService';
 import { RoadSegment } from './speedSimulationService';
+import { mlService } from './mlBackendService';
 
 interface MLETARequest {
   currentLocation: Coordinates;
@@ -59,18 +60,38 @@ interface HybridETAResult {
  * Get ML-based ETA predictions from backend
  */
 async function getMLETAPredictions(request: MLETARequest): Promise<MLETAResponse | null> {
-  const ML_BACKEND_URL = import.meta.env.VITE_ML_BACKEND_URL;
-  
-  if (!ML_BACKEND_URL) {
-    console.log('ML backend not configured, using fallback');
-    return null;
-  }
-
   try {
+    const ML_BACKEND_URL = 'http://localhost:8000';
+
+    // Transform data to match Python backend Pydantic models
+    const payload = {
+      currentLocation: { lat: request.currentLocation[0], lng: request.currentLocation[1] },
+      stops: request.stops.map(s => ({
+        id: s.id,
+        name: s.name,
+        location: { lat: s.location[0], lng: s.location[1] },
+        unloadingTimeMinutes: s.unloadingTimeMinutes || 0
+      })),
+      currentSpeed: request.currentSpeed,
+      trafficData: {
+        congestionLevel: request.trafficData.status,
+        currentSpeed: request.trafficData.currentSpeed,
+        freeFlowSpeed: request.trafficData.normalSpeed
+      },
+      weatherData: {
+        description: request.weatherData.description || request.weatherData.condition,
+        temperature: request.weatherData.temperature,
+        windSpeed: 0 // Default to 0 as it's not in frontend types
+      },
+      timeOfDay: request.timeOfDay,
+      dayOfWeek: request.dayOfWeek,
+      historicalData: request.historicalData
+    };
+
     const response = await fetch(`${ML_BACKEND_URL}/api/eta/predict`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(5000), // 5 second timeout
     });
 
