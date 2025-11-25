@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useShipmentData } from '../hooks/useShipmentData';
 import { UserRole, ConfidenceLevel, Stop, Shipment } from '../types';
 import Map from './Map';
 import StatusCard from './StatusCard';
 import Icon from './Icon';
+import { rerouteEventBus, NotificationPayload } from '../services/rerouteEventBus';
 
 interface TrackingViewProps {
   trackingNumber: string;
@@ -33,8 +34,65 @@ const TrackingView: React.FC<TrackingViewProps> = ({ trackingNumber, role, shipm
     currentUnloadingStop
   } = useShipmentData(shipment, role, recipientStopId);
 
+  // Notification state for reroute events
+  const [notifications, setNotifications] = useState<(NotificationPayload & { timestamp: Date; id: string })[]>([]);
+
+  // Subscribe to reroute events
+  useEffect(() => {
+    if (!shipment?.trackingNumber) return;
+
+    // Load existing notifications from localStorage
+    const existingNotifications = rerouteEventBus.getNotifications(trackingNumber);
+    if (existingNotifications.length > 0) {
+      setNotifications(existingNotifications.map((n, i) => ({
+        ...n,
+        id: `existing-${i}`
+      })));
+    }
+
+    // Subscribe to new events
+    const unsubscribe = rerouteEventBus.subscribe(shipment.trackingNumber, (event) => {
+      console.log('📬 Reroute event received in TrackingView:', event.eventType);
+
+      // Create a notification based on event type
+      let message = '';
+      let type: NotificationPayload['type'] = 'ETA_UPDATE';
+
+      if (event.eventType === 'LONG_HAUL_REROUTE') {
+        type = 'REROUTE';
+        const timeDiff = (event.changes.oldETAs.nextStop || 0) - (event.changes.newETAs.nextStop || 0);
+        message = timeDiff > 0
+          ? `Route optimized! ETA improved by ${Math.round(timeDiff)} minutes. ${event.changes.reason}`
+          : `Route updated. ${event.changes.reason}`;
+      } else if (event.eventType === 'LAST_MILE_RESEQUENCE') {
+        type = 'SEQUENCE_CHANGE';
+        message = `Delivery sequence optimized. ${event.changes.reason}`;
+      } else {
+        message = `Route updated. ${event.changes.reason}`;
+      }
+
+      const newNotification = {
+        type,
+        message,
+        newETA: event.changes.newETAs.nextStop,
+        oldETA: event.changes.oldETAs.nextStop,
+        timestamp: new Date(),
+        id: event.eventId
+      };
+
+      setNotifications(prev => [newNotification, ...prev].slice(0, 5));
+    });
+
+    return () => unsubscribe();
+  }, [shipment?.trackingNumber, trackingNumber]);
+
+  // Dismiss a notification
+  const dismissNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  }, []);
+
   // Calculate time since last update and time until next update
-  const [timeDisplay, setTimeDisplay] = React.useState({ lastUpdate: '0s ago', nextUpdate: '60s' });
+  const [timeDisplay, setTimeDisplay] = useState({ lastUpdate: '0s ago', nextUpdate: '60s' });
 
   React.useEffect(() => {
     const updateTimer = () => {
@@ -120,6 +178,48 @@ const TrackingView: React.FC<TrackingViewProps> = ({ trackingNumber, role, shipm
       <div className="md:w-1/3 h-1/2 md:h-full p-4 overflow-y-auto space-y-4">
         <h2 className="text-2xl font-bold text-gray-800">Tracking #{trackingNumber}</h2>
         <p className="text-sm text-gray-500 -mt-3 pb-2 border-b">Role: {role}</p>
+
+        {/* Real-time Notifications */}
+        {notifications.length > 0 && (
+          <div className="space-y-2">
+            {notifications.map((notif) => (
+              <div
+                key={notif.id}
+                className={`p-3 rounded-lg border-l-4 shadow-sm animate-slide-down relative ${
+                  notif.type === 'REROUTE'
+                    ? 'bg-green-50 border-green-500 text-green-800'
+                    : notif.type === 'SEQUENCE_CHANGE'
+                    ? 'bg-blue-50 border-blue-500 text-blue-800'
+                    : 'bg-indigo-50 border-indigo-500 text-indigo-800'
+                }`}
+              >
+                <button
+                  onClick={() => dismissNotification(notif.id)}
+                  className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
+                >
+                  <Icon name="x-circle" className="h-4 w-4" />
+                </button>
+                <div className="flex items-start space-x-2">
+                  <Icon
+                    name={notif.type === 'REROUTE' ? 'zap' : notif.type === 'SEQUENCE_CHANGE' ? 'list' : 'bell'}
+                    className="h-5 w-5 mt-0.5 flex-shrink-0"
+                  />
+                  <div className="flex-1 pr-4">
+                    <p className="text-sm font-medium">{notif.message}</p>
+                    {notif.newETA !== undefined && notif.oldETA !== undefined && (
+                      <p className="text-xs mt-1 opacity-75">
+                        ETA: {Math.round(notif.oldETA)} min → {Math.round(notif.newETA)} min
+                      </p>
+                    )}
+                    <p className="text-xs opacity-50 mt-1">
+                      {notif.timestamp.toLocaleTimeString()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* API Update Status */}
         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-3 text-xs">

@@ -132,16 +132,53 @@ const Map: React.FC<MapProps> = ({
     otherShipments = [],
     customStopLabels = {}
 }) => {
-    // routePath now comes from the hook which already fetched it from OSRM
+    const [mapError, setMapError] = useState<string | null>(null);
 
-    if (routePath.length === 0) {
-        return <div className="flex items-center justify-center h-full bg-gray-200"><p>Route data not available.</p></div>
+    // Validate inputs
+    if (!truckPosition || !Array.isArray(truckPosition) || truckPosition.length !== 2) {
+        return (
+            <div className="flex items-center justify-center h-full bg-gray-100">
+                <div className="text-center p-4">
+                    <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-3"></div>
+                    <p className="text-gray-600">Waiting for GPS position...</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (!routePath || routePath.length === 0) {
+        return (
+            <div className="flex items-center justify-center h-full bg-gray-100">
+                <div className="text-center p-4">
+                    <div className="animate-pulse h-8 w-8 bg-blue-200 rounded-full mx-auto mb-3"></div>
+                    <p className="text-gray-600">Loading route data...</p>
+                    <p className="text-xs text-gray-400 mt-1">Fetching from OSRM service</p>
+                </div>
+            </div>
+        );
     }
 
     // Find the next destination (first pending stop or last stop)
     const nextDestination = stops.find(stop => stop.status === 'Pending')?.location || stops[stops.length - 1]?.location || routePath[routePath.length - 1];
 
-    const bounds = L.latLngBounds(routePath);
+    // Safely create bounds with validation
+    let bounds: L.LatLngBounds;
+    try {
+        const validPoints = routePath.filter(p => 
+            Array.isArray(p) && p.length === 2 && 
+            !isNaN(p[0]) && !isNaN(p[1]) &&
+            p[0] >= -90 && p[0] <= 90 &&
+            p[1] >= -180 && p[1] <= 180
+        );
+        if (validPoints.length < 2) {
+            bounds = L.latLngBounds([truckPosition, nextDestination]);
+        } else {
+            bounds = L.latLngBounds(validPoints);
+        }
+    } catch (e) {
+        console.error('Error creating map bounds:', e);
+        bounds = L.latLngBounds([truckPosition, nextDestination]);
+    }
 
     return (
         <MapContainer

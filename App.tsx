@@ -21,6 +21,8 @@ interface TrackingInfo {
   role: UserRole;
   shipmentId: string;
   recipientStopId?: string;
+  createdAt?: string; // ISO timestamp
+  accessCount?: number; // Track usage for analytics
 }
 
 interface UserSession extends TrackingInfo {
@@ -32,6 +34,30 @@ interface GeneratedTrackingNumber {
   role: string;
   id: string;
 }
+
+// Tracking number validation utilities
+const TRACKING_NUMBER_PATTERNS = {
+  MANAGER: /^MGR-[A-Z0-9]{6}$/,
+  SUPPLIER: /^SUP-[A-Z0-9]{6}$/,
+  RECIPIENT: /^[A-Z]{2,4}-[A-Z0-9]{6}$/,
+  DEMO_SUPPLIER: /^SUPPLIER\d*$/,
+  DEMO_RECIPIENT: /^RECIPIENT\d*$/,
+  DEMO_MANAGER: /^MANAGER\d*$/,
+};
+
+const isValidTrackingNumberFormat = (trackingNumber: string): boolean => {
+  return Object.values(TRACKING_NUMBER_PATTERNS).some(pattern => pattern.test(trackingNumber));
+};
+
+const generateSecureTrackingId = (prefix: string): string => {
+  // Use characters that are easy to read/type (excluded confusing chars like I, O, 0, 1, L)
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let randomPart = '';
+  for (let i = 0; i < 6; i++) {
+    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `${prefix}-${randomPart}`;
+};
 
 const DEMO_SHIPMENT_ID = 'SHIP001';
 
@@ -139,13 +165,43 @@ const App: React.FC = () => {
   }, [trackingNumberMap]);
 
   const handleTrack = useCallback((trackingNumberInput: string) => {
-    const trackingNumber = trackingNumberInput.trim().toUpperCase();
+    // Normalize and validate input
+    const trackingNumber = trackingNumberInput.trim().toUpperCase().replace(/\s+/g, '');
     console.log(`🔍 Attempting to track: "${trackingNumber}"`);
+    
+    // Basic validation
+    if (!trackingNumber) {
+      setError('Please enter a tracking number.');
+      setSession(null);
+      return;
+    }
+
+    if (trackingNumber.length < 4) {
+      setError('Tracking number is too short. Please check and try again.');
+      setSession(null);
+      return;
+    }
+
+    // Check format validity (warn but don't block - allows legacy/demo numbers)
+    if (!isValidTrackingNumberFormat(trackingNumber)) {
+      console.warn('⚠️ Tracking number format is unusual:', trackingNumber);
+    }
+
     console.log('📋 Available tracking numbers:', Object.keys(trackingNumberMap));
 
     const sessionData = trackingNumberMap[trackingNumber];
     if (sessionData) {
       console.log('✅ Found session data:', sessionData);
+      
+      // Update access count for analytics
+      setTrackingNumberMap(prev => ({
+        ...prev,
+        [trackingNumber]: {
+          ...prev[trackingNumber],
+          accessCount: (prev[trackingNumber]?.accessCount || 0) + 1
+        }
+      }));
+
       let shipmentData = shipments[sessionData.shipmentId];
       if (sessionData.shipmentId === DEMO_SHIPMENT_ID) {
         shipmentData = createFreshDemoShipment();
@@ -180,26 +236,48 @@ const App: React.FC = () => {
 
   const handleShipmentCreated = (newShipment: Shipment) => {
     const newShipmentId = newShipment.trackingNumber;
+    const createdAt = new Date().toISOString();
 
     const newTrackingMap: Record<string, TrackingInfo> = {};
     const newGeneratedNumbers: GeneratedTrackingNumber[] = [];
 
-    const generateId = (prefix: string) => `${prefix}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-
-    const managerId = generateId('MGR');
-    newTrackingMap[managerId] = { role: UserRole.MANAGER, shipmentId: newShipmentId };
+    // Use the secure ID generator for all tracking numbers
+    const managerId = generateSecureTrackingId('MGR');
+    newTrackingMap[managerId] = { 
+      role: UserRole.MANAGER, 
+      shipmentId: newShipmentId,
+      createdAt,
+      accessCount: 0
+    };
     newGeneratedNumbers.push({ role: 'Manager', id: managerId });
 
-    const supplierId = generateId('SUP');
-    newTrackingMap[supplierId] = { role: UserRole.SUPPLIER, shipmentId: newShipmentId };
+    const supplierId = generateSecureTrackingId('SUP');
+    newTrackingMap[supplierId] = { 
+      role: UserRole.SUPPLIER, 
+      shipmentId: newShipmentId,
+      createdAt,
+      accessCount: 0
+    };
     newGeneratedNumbers.push({ role: 'Supplier', id: supplierId });
 
+    // Generate recipient tracking numbers for each last-mile stop
     newShipment.lastMileStops.forEach(stop => {
-      const prefix = stop.name.substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, '');
-      const recipientId = generateId(prefix || 'RCPT');
-      newTrackingMap[recipientId] = { role: UserRole.RECIPIENT, shipmentId: newShipmentId, recipientStopId: stop.id };
+      // Create a clean prefix from stop name (2-4 chars)
+      const cleanName = stop.name.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+      const prefix = cleanName.length >= 2 ? cleanName.substring(0, Math.min(4, cleanName.length)) : 'RCP';
+      const recipientId = generateSecureTrackingId(prefix);
+      
+      newTrackingMap[recipientId] = { 
+        role: UserRole.RECIPIENT, 
+        shipmentId: newShipmentId, 
+        recipientStopId: stop.id,
+        createdAt,
+        accessCount: 0
+      };
       newGeneratedNumbers.push({ role: `Recipient: ${stop.name}`, id: recipientId });
     });
+    
+    console.log(`📝 Created ${Object.keys(newTrackingMap).length} tracking numbers for shipment ${newShipmentId}`);
     
     setShipments(prev => ({ ...prev, [newShipmentId]: newShipment }));
     setTrackingNumberMap(prev => ({ ...prev, ...newTrackingMap }));

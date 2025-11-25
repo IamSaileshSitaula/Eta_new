@@ -1,10 +1,19 @@
 /**
  * Last-Mile Optimization Service
  * Communicates with ML backend for AI-powered stop sequence optimization
+ * Features: 
+ * - Graph Neural Network (GNN) based route optimization
+ * - Nearest-neighbor fallback heuristic
+ * - Time window constraints support
+ * - Real-time traffic/weather integration
  */
 
 import { Stop, Coordinates } from '../types';
 import { mlService } from './mlBackendService';
+
+// Cache for optimization results
+const optimizationCache = new Map<string, { result: OptimizationResult; timestamp: number }>();
+const CACHE_TTL_MS = 120000; // 2 minutes cache
 
 export interface OptimizationRequest {
   stops: Stop[];
@@ -49,11 +58,31 @@ export interface OptimizationResult {
 }
 
 /**
+ * Generate a cache key for optimization requests
+ */
+function generateCacheKey(request: OptimizationRequest): string {
+  const stopIds = request.stops.map(s => s.id).sort().join('|');
+  const startPos = request.vehicleStartPosition 
+    ? `${request.vehicleStartPosition.lat.toFixed(4)},${request.vehicleStartPosition.lng.toFixed(4)}`
+    : 'default';
+  return `${stopIds}:${startPos}`;
+}
+
+/**
  * Request AI-powered optimization for last-mile stop sequence
+ * Uses ML backend with GNN model, falls back to nearest-neighbor heuristic
  */
 export async function optimizeStopSequence(
   request: OptimizationRequest
 ): Promise<OptimizationResult> {
+  // Check cache first
+  const cacheKey = generateCacheKey(request);
+  const cached = optimizationCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    console.log('📦 Using cached optimization result');
+    return cached.result;
+  }
+
   try {
     // Use the centralized ML service
     const data = await mlService.optimizeRoute({
@@ -72,10 +101,12 @@ export async function optimizeStopSequence(
 
     if (!data) {
       console.warn('ML backend returned null, using fallback optimization.');
-      return fallbackOptimization(request);
+      const fallbackResult = fallbackOptimization(request);
+      optimizationCache.set(cacheKey, { result: fallbackResult, timestamp: Date.now() });
+      return fallbackResult;
     }
 
-    return {
+    const result: OptimizationResult = {
       optimizedSequence: data.optimized_sequence,
       timeSavings: data.time_savings_minutes || 0,
       distanceSavings: data.distance_savings_miles || 0,
@@ -85,6 +116,12 @@ export async function optimizeStopSequence(
       reasoning: data.reasoning || 'Optimized using graph neural network analysis',
       comparisonMetrics: data.comparison_metrics || buildDefaultComparison(request.stops)
     };
+
+    // Cache successful ML results
+    optimizationCache.set(cacheKey, { result, timestamp: Date.now() });
+    console.log(`🧠 ML optimization cached for ${request.stops.length} stops`);
+
+    return result;
   } catch (error) {
     console.warn('Last-mile optimization connection failed, using fallback:', error);
     
@@ -344,8 +381,74 @@ export function estimateOptimizationConfidence(
   return Math.max(0.5, Math.min(0.95, confidence));
 }
 
+/**
+ * Clear the optimization cache (useful when conditions change significantly)
+ */
+export function clearOptimizationCache(): void {
+  optimizationCache.clear();
+  console.log('🗑️ Optimization cache cleared');
+}
+
+/**
+ * Get cache statistics for monitoring
+ */
+export function getCacheStats(): { size: number; oldestEntry: number | null } {
+  let oldestTimestamp: number | null = null;
+  
+  for (const [, value] of optimizationCache) {
+    if (oldestTimestamp === null || value.timestamp < oldestTimestamp) {
+      oldestTimestamp = value.timestamp;
+    }
+  }
+  
+  return {
+    size: optimizationCache.size,
+    oldestEntry: oldestTimestamp ? Date.now() - oldestTimestamp : null
+  };
+}
+
+/**
+ * Calculate estimated delivery times for each stop in sequence
+ */
+export function calculateDeliveryTimes(
+  stops: Stop[],
+  startTime: Date,
+  vehicleStartPosition: { lat: number; lng: number }
+): Array<{ stopId: string; estimatedArrival: Date; estimatedDeparture: Date }> {
+  const deliveryTimes: Array<{ stopId: string; estimatedArrival: Date; estimatedDeparture: Date }> = [];
+  let currentTime = new Date(startTime);
+  let currentPos = vehicleStartPosition;
+
+  for (const stop of stops) {
+    const stopPos = coordsToLatLng(stop.location);
+    const distance = calculateDistance(currentPos, stopPos);
+    const travelTimeMinutes = distance * 2; // ~30 mph average
+
+    // Arrival time
+    const arrivalTime = new Date(currentTime.getTime() + travelTimeMinutes * 60 * 1000);
+    
+    // Departure time (after unloading)
+    const unloadingMinutes = stop.unloadingTimeMinutes || 5;
+    const departureTime = new Date(arrivalTime.getTime() + unloadingMinutes * 60 * 1000);
+
+    deliveryTimes.push({
+      stopId: stop.id,
+      estimatedArrival: arrivalTime,
+      estimatedDeparture: departureTime
+    });
+
+    currentTime = departureTime;
+    currentPos = stopPos;
+  }
+
+  return deliveryTimes;
+}
+
 export default {
   optimizeStopSequence,
   validateOptimizedSequence,
-  estimateOptimizationConfidence
+  estimateOptimizationConfidence,
+  clearOptimizationCache,
+  getCacheStats,
+  calculateDeliveryTimes
 };

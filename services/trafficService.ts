@@ -2,6 +2,11 @@ import { Coordinates, TrafficData } from '../types';
 
 const TOMTOM_TRAFFIC_BASE_URL = 'https://api.tomtom.com/traffic/services/4';
 
+// Cache for traffic data to reduce API calls
+const trafficCache = new Map<string, { data: TrafficData; timestamp: number }>();
+const CACHE_TTL_MS = 60000; // 1 minute cache (traffic changes frequently)
+const REQUEST_TIMEOUT_MS = 5000; // 5 second timeout
+
 interface TomTomTrafficFlowResponse {
   flowSegmentData: {
     frc: string; // Functional Road Class
@@ -12,6 +17,29 @@ interface TomTomTrafficFlowResponse {
     confidence: number; // 0.0 to 1.0
     roadClosure: boolean;
   };
+}
+
+/**
+ * Generate cache key for location
+ */
+function getCacheKey(lat: number, lon: number): string {
+  // Round to 3 decimal places (~100m precision) for cache grouping
+  return `${lat.toFixed(3)},${lon.toFixed(3)}`;
+}
+
+/**
+ * Fetch with timeout
+ */
+async function fetchWithTimeout(url: string, timeout: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -29,6 +57,15 @@ export const fetchRealTrafficData = async (location: Coordinates): Promise<Traff
   }
 
   const [lat, lon] = location;
+  
+  // Check cache first
+  const cacheKey = getCacheKey(lat, lon);
+  const cached = trafficCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    console.log('📦 Using cached traffic data');
+    return cached.data;
+  }
+  
   console.log(`🚦 Fetching real traffic data for [${lat}, ${lon}]`);
   
   // TomTom Traffic Flow Segment Data API
@@ -36,60 +73,73 @@ export const fetchRealTrafficData = async (location: Coordinates): Promise<Traff
   const zoom = 10;
   const url = `${TOMTOM_TRAFFIC_BASE_URL}/flowSegmentData/relative0/${zoom}/json?point=${lat},${lon}&unit=MPH&openLr=false&key=${TOMTOM_API_KEY}`;
   
-  const response = await fetch(url);
-  
-  if (!response.ok) {
-    throw new Error(`TomTom API error: ${response.status}`);
+  try {
+    const response = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS);
+    
+    if (!response.ok) {
+      throw new Error(`TomTom API error: ${response.status}`);
+    }
+    
+    const data: TomTomTrafficFlowResponse = await response.json();
+    const { currentSpeed, freeFlowSpeed, currentTravelTime, freeFlowTravelTime, roadClosure, confidence } = data.flowSegmentData;
+    
+    // Convert km/h to mph (TomTom returns km/h even when unit=MPH is specified in some cases)
+    const currentSpeedMph = currentSpeed > 200 ? Math.round(currentSpeed * 0.621371) : Math.round(currentSpeed);
+    const normalSpeedMph = freeFlowSpeed > 200 ? Math.round(freeFlowSpeed * 0.621371) : Math.round(freeFlowSpeed);
+    
+    // Calculate traffic level based on speed ratio
+    const speedFactor = currentSpeedMph / normalSpeedMph;
+    const delaySeconds = currentTravelTime - freeFlowTravelTime;
+    
+    let status: TrafficData['status'];
+    let description: string;
+    
+    if (roadClosure) {
+      status = 'Heavy';
+      description = `Road closure detected. Route may be blocked.`;
+    } else if (speedFactor >= 0.85) {
+      // Traffic is flowing at 85%+ of normal speed
+      status = 'Light';
+      description = `Traffic is flowing smoothly at ${currentSpeedMph} mph.`;
+    } else if (speedFactor >= 0.50) {
+      // Traffic is flowing at 50-85% of normal speed
+      status = 'Moderate';
+      const delayMinutes = Math.round(delaySeconds / 60);
+      description = `Moderate congestion. Speed reduced to ${currentSpeedMph} mph (normal: ${normalSpeedMph} mph). ~${delayMinutes} min delay on this segment.`;
+    } else {
+      // Traffic is flowing at <50% of normal speed
+      status = 'Heavy';
+      const delayMinutes = Math.round(delaySeconds / 60);
+      description = `Heavy traffic. Speed reduced to ${currentSpeedMph} mph (${Math.round(speedFactor * 100)}% of normal). ~${delayMinutes} min delay on this segment.`;
+    }
+    
+    // Add confidence level information
+    if (confidence < 0.7) {
+      description += ' (Limited traffic data)';
+    }
+    
+    console.log('✅ TomTom traffic data retrieved successfully:', { status, currentSpeedMph, normalSpeedMph });
+    
+    const result: TrafficData = {
+      status,
+      description,
+      currentSpeed: currentSpeedMph,
+      normalSpeed: normalSpeedMph,
+      speedFactor,
+      delaySeconds
+    };
+
+    // Cache the result
+    trafficCache.set(cacheKey, { data: result, timestamp: Date.now() });
+    
+    return result;
+  } catch (error) {
+    // If it's an abort error (timeout), throw a specific message
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Traffic API request timed out');
+    }
+    throw error;
   }
-  
-  const data: TomTomTrafficFlowResponse = await response.json();
-  const { currentSpeed, freeFlowSpeed, currentTravelTime, freeFlowTravelTime, roadClosure, confidence } = data.flowSegmentData;
-  
-  // Convert km/h to mph (TomTom returns km/h even when unit=MPH is specified in some cases)
-  const currentSpeedMph = currentSpeed > 200 ? Math.round(currentSpeed * 0.621371) : Math.round(currentSpeed);
-  const normalSpeedMph = freeFlowSpeed > 200 ? Math.round(freeFlowSpeed * 0.621371) : Math.round(freeFlowSpeed);
-  
-  // Calculate traffic level based on speed ratio
-  const speedFactor = currentSpeedMph / normalSpeedMph;
-  const delaySeconds = currentTravelTime - freeFlowTravelTime;
-  
-  let status: TrafficData['status'];
-  let description: string;
-  
-  if (roadClosure) {
-    status = 'Heavy';
-    description = `Road closure detected. Route may be blocked.`;
-  } else if (speedFactor >= 0.85) {
-    // Traffic is flowing at 85%+ of normal speed
-    status = 'Light';
-    description = `Traffic is flowing smoothly at ${currentSpeedMph} mph.`;
-  } else if (speedFactor >= 0.50) {
-    // Traffic is flowing at 50-85% of normal speed
-    status = 'Moderate';
-    const delayMinutes = Math.round(delaySeconds / 60);
-    description = `Moderate congestion. Speed reduced to ${currentSpeedMph} mph (normal: ${normalSpeedMph} mph). ~${delayMinutes} min delay on this segment.`;
-  } else {
-    // Traffic is flowing at <50% of normal speed
-    status = 'Heavy';
-    const delayMinutes = Math.round(delaySeconds / 60);
-    description = `Heavy traffic. Speed reduced to ${currentSpeedMph} mph (${Math.round(speedFactor * 100)}% of normal). ~${delayMinutes} min delay on this segment.`;
-  }
-  
-  // Add confidence level information
-  if (confidence < 0.7) {
-    description += ' (Limited traffic data)';
-  }
-  
-  console.log('✅ TomTom traffic data retrieved successfully:', { status, currentSpeedMph, normalSpeedMph });
-  
-  return {
-    status,
-    description,
-    currentSpeed: currentSpeedMph,
-    normalSpeed: normalSpeedMph,
-    speedFactor,
-    delaySeconds
-  };
 };
 
 /**

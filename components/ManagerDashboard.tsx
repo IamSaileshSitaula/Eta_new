@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useShipmentData } from '../hooks/useShipmentData';
 import { UserRole, ConfidenceLevel, Stop, Shipment } from '../types';
 import Map, { OtherShipmentMapData } from './Map';
@@ -6,9 +6,11 @@ import StatusCard from './StatusCard';
 import Icon from './Icon';
 import RouteSelector from './RouteSelector';
 import StopSequencer from './StopSequencer';
+import RerouteNotification from './RerouteNotification';
 import { RouteOption, generateAlternativeRoutes } from '../services/multiRouteService';
 import { useReroutingEngine } from '../hooks/useReroutingEngine';
 import { useLastMileOptimization } from '../hooks/useLastMileOptimization';
+import { rerouteEventBus } from '../services/rerouteEventBus';
 import ShipmentTracker, { ShipmentTrackerData } from './ShipmentTracker';
 
 interface ManagerDashboardProps {
@@ -160,8 +162,77 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
     },
     onOptimizationAccepted: (result) => {
       console.log('✅ Optimization accepted:', result);
+      // Publish event to notify all stakeholders
+      if (safeCurrentShipment) {
+        rerouteEventBus.publishRerouteEvent({
+          eventId: crypto.randomUUID(),
+          timestamp: new Date(),
+          shipmentId: safeCurrentShipment.trackingNumber,
+          eventType: 'LAST_MILE_RESEQUENCE',
+          changes: {
+            affectedStops: result.optimizedSequence,
+            newETAs: {},
+            oldETAs: {},
+            reason: result.reasoning || 'Route optimized for efficiency'
+          },
+          triggeredBy: 'MANAGER'
+        });
+      }
     }
   });
+
+  // Rerouting engine for long-haul (continuous evaluation)
+  const { rerouteEval, isEvaluating } = useReroutingEngine(
+    safeCurrentShipment!,
+    safeTruckPosition || [0, 0],
+    currentRouteOption,
+    UserRole.MANAGER
+  );
+
+  // Handle accepting a reroute suggestion
+  const handleAcceptReroute = useCallback(async () => {
+    if (!rerouteEval || !rerouteEval.newRoute || !safeCurrentShipment) return;
+
+    console.log('✅ Accepting reroute suggestion');
+
+    // Update the active route
+    setActiveRouteId(rerouteEval.newRoute.id);
+    setPreferredRouteId(rerouteEval.newRoute.id);
+    preferredRouteIdRef.current = rerouteEval.newRoute.id;
+    setCurrentRouteOption(rerouteEval.newRoute);
+
+    // Switch the simulation to follow the new route
+    if (currentShipmentData?.switchRoute) {
+      currentShipmentData.switchRoute(rerouteEval.newRoute.path, rerouteEval.newRoute.segments);
+    }
+
+    // Publish event to notify all stakeholders
+    await rerouteEventBus.publishRerouteEvent({
+      eventId: crypto.randomUUID(),
+      timestamp: new Date(),
+      shipmentId: safeCurrentShipment.trackingNumber,
+      eventType: 'LONG_HAUL_REROUTE',
+      changes: {
+        affectedStops: [],
+        newETAs: { nextStop: rerouteEval.comparisonData.newETA },
+        oldETAs: { nextStop: rerouteEval.comparisonData.currentETA },
+        reason: rerouteEval.reason,
+        routeChange: {
+          oldRouteId: currentRouteOption?.id || 'unknown',
+          newRouteId: rerouteEval.newRoute.id
+        }
+      },
+      triggeredBy: 'MANAGER'
+    });
+
+    console.log('🚛 Route switched and event published');
+  }, [rerouteEval, safeCurrentShipment, currentRouteOption, currentShipmentData]);
+
+  // Handle rejecting a reroute suggestion
+  const handleRejectReroute = useCallback(() => {
+    console.log('❌ Reroute suggestion rejected');
+    // The rerouting engine will continue evaluating
+  }, []);
 
   // Track when first update happens - trigger after initial data load (3 seconds grace period)
   useEffect(() => {
@@ -496,6 +567,24 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({
         </div>
 
         {/* Delay Information removed for Manager view as requested */}
+
+        {/* Reroute Notification - shows when a better route is available */}
+        {rerouteEval && rerouteEval.shouldReroute && currentRouteOption && (
+          <RerouteNotification
+            evaluation={rerouteEval}
+            currentRoute={currentRouteOption}
+            onAccept={handleAcceptReroute}
+            onReject={handleRejectReroute}
+          />
+        )}
+
+        {/* Evaluating indicator */}
+        {isEvaluating && (
+          <div className="bg-blue-50 border border-blue-200 text-blue-700 p-2 rounded-md text-xs flex items-center space-x-2">
+            <div className="animate-spin h-3 w-3 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+            <span>Evaluating alternative routes...</span>
+          </div>
+        )}
 
         {/* Multi-Route Selector */}
         {availableRoutes.length > 0 && eta > 0 && (
