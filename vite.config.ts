@@ -5,7 +5,8 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
-      base: '/Eta_new/',
+      // base is only needed for GitHub Pages, Vercel uses root
+      base: process.env.VERCEL ? '/' : '/Eta_new/',
       server: {
         port: 3000,
         host: '0.0.0.0',
