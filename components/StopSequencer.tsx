@@ -114,7 +114,7 @@ const StopSequencer: React.FC<StopSequencerProps> = ({
           ) : (
             <>
               <Icon name="zap" className="h-4 w-4" />
-              <span>AI Optimize</span>
+              <span>Optimize</span>
             </>
           )}
         </button>
